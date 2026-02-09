@@ -172,7 +172,7 @@ class SarvamTTS {
   async generateAndStream(text, options = {}, twilioWs, state) {
     if (!text?.trim() || state.interrupted || state.callEnded) return 0;
 
-    const voice = options.voice || "arya";
+    const voice = options.voice || "karun";
     const pitch = options.pitch ?? 0.0;
     const pace = options.pace ?? 1.15;
     
@@ -407,7 +407,7 @@ class TTSManager {
     if (isIndianLanguage(languageCode)) {
       console.log(`🎤 Using Sarvam TTS for language: ${languageCode}`);
       return await this.sarvamTTS.generateAndStream(text, {
-        voice: options.sarvamVoice || options.voice || "arya",
+        voice: options.sarvamVoice || options.voice || "karun",
         languageCode: languageCode,
         pitch: options.pitch ?? 0.0,
         pace: options.pace ?? 1.15
@@ -1252,7 +1252,7 @@ async function loadInboundSettingsByPhone(phoneNumber) {
       firstMessage: firstMessage,
       calendarConfig,
       knowledgeChunks,
-      sarvamVoice: config.voice || "arya",
+      sarvamVoice: config.voice || "karun",
       transcriberLanguage: config.language || "en-IN",
       transcriberModel: "nova-3",
       // ElevenLabs settings (if configured)
@@ -1307,7 +1307,7 @@ export async function registerTwilio(fastify, deps) {
       firstMessage,
       maxTokens,
       agentId,
-      sarvamVoice = "arya",
+      sarvamVoice = "karun",
       elevenLabsVoiceId,
       elevenLabsSpeed = 1.2,
       elevenLabsStability = 1.0,

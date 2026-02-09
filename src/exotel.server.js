@@ -7,7 +7,6 @@ import { Readable } from "stream";
 dns.setDefaultResultOrder("ipv4first");
 dotenv.config({ path: ".env.production" });
 dotenv.config();
-
 const { Pinecone } = await import("@pinecone-database/pinecone");
 import { createClient } from "@deepgram/sdk";
 import { LiveTranscriptionEvents } from "@deepgram/sdk";
@@ -385,22 +384,31 @@ class OptimizedSarvamTTS {
 
         await socket.waitForOpen();
 
-        socket.configureConnection({
+        const voice = (options.voice || "Arya").toLowerCase();
+        const pitch = options.pitch ?? 0.0;
+        const pace = options.pace ?? 1.0;
+        let languageCode = options.languageCode || "kn-IN";
+
+        const configMessage = {
             type: "config",
             data: {
-                target_language_code: options.languageCode || "kn-IN",
-                speaker: (options.voice && String(options.voice).trim()) || "Karun",
-                pitch: options.pitch ?? 0,
-                pace: options.pace || 0.9, // Slower for better pronunciation
-                loudness: options.loudness || 1.1, // Slightly louder
+                target_language_code: languageCode,
+                speaker: voice,
+                pitch: pitch,
+                pace: pace,
                 output_audio_codec: "mp3",
-                output_audio_bitrate: "128k", // Better quality
-                speech_sample_rate: 16000, // Higher quality than 8000
-                min_buffer_size: 50, // More responsive
-                max_chunk_length: 150,
-                enable_preprocessing: true // Better text handling
+                speech_sample_rate: 16000,
+                min_buffer_size: 30,
+                max_chunk_length: 100
             }
-        });
+        };
+
+        if (socket.socket && typeof socket.socket.send === 'function') {
+            socket.socket.send(JSON.stringify(configMessage));
+            console.log(`✅ Sarvam Config: lang=${languageCode}, voice=${voice}, pace=${pace}`);
+        } else {
+            console.error("[Sarvam TTS] Cannot access socket.socket");
+        }
 
         socket.on("message", async (msg) => {
             if (
@@ -409,18 +417,36 @@ class OptimizedSarvamTTS {
                 exotelWs.readyState === WebSocket.OPEN &&
                 !state.interrupted
             ) {
-                const pcm = await mp3Base64ToPcm(msg.data.audio);
-                exotelWs.send(JSON.stringify({
-                    event: "media",
-                    stream_sid: state.streamSid,
-                    media: { payload: pcm.toString("base64") }
-                }));
+                try {
+                    const pcm = await mp3Base64ToPcm(msg.data.audio);
+                    console.log(`🔊 Sending PCM16 audio: ${pcm.length} bytes`);
+                    exotelWs.send(JSON.stringify({
+                        event: "media",
+                        stream_sid: state.streamSid,
+                        media: { payload: pcm.toString("base64") }
+                    }));
+                } catch (err) {
+                    console.error("[PCM Conversion Error]", err.message);
+                }
             }
 
             if (msg.type === "event" && msg.data?.event_type === "final") {
+                console.log(`[Sarvam] Final event received`);
                 state.sarvamSpeaking = false;
                 state.botSpeaking = false;
             }
+        });
+
+        socket.on("error", (err) => {
+            console.error("[Sarvam Socket Error]", err.message);
+            state.sarvamSpeaking = false;
+            state.botSpeaking = false;
+        });
+
+        socket.on("close", () => {
+            console.log(`[Sarvam] Socket closed`);
+            state.sarvamSpeaking = false;
+            state.botSpeaking = false;
         });
 
         socket.convert(text.trim());
@@ -431,6 +457,27 @@ class OptimizedSarvamTTS {
 
 
 const sarvamTTS = new OptimizedSarvamTTS(SARVAM_API_KEY);
+
+const INDIAN_LANGUAGES = {
+  'hi': 'hi-IN',  // Hindi
+  'hi-IN': 'hi-IN',
+  'kn': 'kn-IN',  // Kannada
+  'kn-IN': 'kn-IN',
+  'ta': 'ta-IN',  // Tamil
+  'ta-IN': 'ta-IN',
+  'te': 'te-IN',  // Telugu
+  'te-IN': 'te-IN',
+  'bn': 'bn-IN',  // Bengali
+  'bn-IN': 'bn-IN',
+  'ml': 'ml-IN',  // Malayalam
+  'ml-IN': 'ml-IN',
+  'mr': 'mr-IN',  // Marathi
+  'mr-IN': 'mr-IN',
+  'gu': 'gu-IN',  // Gujarati
+  'gu-IN': 'gu-IN',
+  'pa': 'pa-IN',  // Punjabi
+  'pa-IN': 'pa-IN',
+};
 
 function normalizeLanguageCode(languageCode) {
   if (!languageCode) return null;
@@ -445,16 +492,26 @@ function normalizeLanguageCode(languageCode) {
     const mp3Buffer = Buffer.from(mp3Base64, "base64");
     return new Promise((resolve, reject) => {
         const pcmChunks = [];
+        const timeoutId = setTimeout(() => {
+            reject(new Error("FFmpeg conversion timeout"));
+        }, 5000);
+        
         ffmpeg(Readable.from(mp3Buffer))
         .inputFormat("mp3")
         .audioChannels(1)
         .audioFrequency(8000)
         .audioCodec("pcm_s16le")
         .format("s16le")
-        .on("error", reject)
+        .on("error", (err) => {
+            clearTimeout(timeoutId);
+            reject(err);
+        })
         .pipe()
         .on("data", chunk => pcmChunks.push(chunk))
-        .on("end", () => resolve(Buffer.concat(pcmChunks)));
+        .on("end", () => {
+            clearTimeout(timeoutId);
+            resolve(Buffer.concat(pcmChunks));
+        });
     });
     }
 
@@ -708,7 +765,7 @@ function normalizeLanguageCode(languageCode) {
             speed: settings.elevenLabsSpeed || 1.0,
             aggressive: true,
             language: settings.transcriberLanguage,
-            voice: settings.sarvamVoice || "Karun",
+            voice: (settings.sarvamVoice || "arya").toLowerCase(),  // Normalize to lowercase
         },
         state.activeTurnAbort || null,
         state.turnSeq
@@ -719,6 +776,7 @@ function normalizeLanguageCode(languageCode) {
 
         const turnTime = Date.now() - turnStart;
         console.log(`⏱️ Turn completed: ${turnTime}ms`);
+        console.log(`🎯 Voice setting used: "${settings.sarvamVoice}" → normalized: "${(settings.sarvamVoice || "arya").toLowerCase()}"`);
         
         // Update metrics
         stateManager.metrics.avgLatency = 
@@ -774,15 +832,15 @@ function normalizeLanguageCode(languageCode) {
         const language = ttsOptions.language || ttsOptions.transcriberLanguage;
 
         if (useSarvam(language)) {
-        console.log(`🗣️ Sarvam TTS: "${text.substring(0, 40)}..."`);
+        console.log(`🗣️ Sarvam TTS: "${text.substring(0, 40)}..." voice="${(ttsOptions.voice || 'arya').toLowerCase()}"`);
         
         await sarvamTTS.generateAndStream(
             text,
             {
-            voice: ttsOptions.voice || "Karun",
+            voice: (ttsOptions.voice || "arya").toLowerCase(),  // Normalize to lowercase
             languageCode: normalizeSarvamLang(language),
             pitch: ttsOptions.pitch ?? 0.0,
-            pace: ttsOptions.speed || 1.1,
+            pace: ttsOptions.pace || 1.0,  // Use pace not speed, default to 1.0
             },
             exotelWs,
             state
@@ -1309,8 +1367,8 @@ function normalizeLanguageCode(languageCode) {
       elevenLabsSimilarityBoost: elevenLabsSimilarityBoost ?? 0.7,
       sarvamVoice:
         typeof sarvamVoice === "string" && sarvamVoice.trim()
-          ? sarvamVoice.trim()
-          : "Karun",
+          ? sarvamVoice.trim().toLowerCase()
+          : "karun",  // Default to lowercase "karun"
       transcriberProvider,
       transcriberLanguage,
       transcriberModel,
@@ -1329,6 +1387,9 @@ function normalizeLanguageCode(languageCode) {
       createdAt: Date.now(),
       lastAccessed: Date.now(),
     });
+    
+    const finalVoice = typeof sarvamVoice === "string" && sarvamVoice.trim() ? sarvamVoice.trim().toLowerCase() : "karun";
+    console.log(`✅ Call created with Sarvam voice: "${finalVoice}"`);
 
     stateManager.metrics.totalCalls++;
     stateManager.metrics.activeCalls++;
@@ -1646,8 +1707,8 @@ function normalizeLanguageCode(languageCode) {
                     //     aggressive: true
                     // });
                     await speakText(settings.firstMessage, state, exotelWs, {
-  language: settings.transcriberLanguage, // "kn"
-  voice: settings.sarvamVoice || "Karun",
+  language: settings.transcriberLanguage,
+  voice: (settings.sarvamVoice || "arya").toLowerCase(),  // Normalize to lowercase
   aggressive: true
 });
 
@@ -1887,9 +1948,9 @@ async function loadInboundSettingsByPhone(exotelNumber) {
     firstMessage,
     calendarConfig,
     knowledgeChunks,
-    sarvamVoice: row.voice || "arya",
+    sarvamVoice: "karun",  // Default Sarvam voice for inbound calls
     sarvamLanguage: "hi",
-    transcriberLanguage: "kn",
+    transcriberLanguage: row.transcriber_language || "kn",
     transcriberModel: "nova-3",
     callType: "inbound",
     provider: "exotel",
@@ -1897,8 +1958,6 @@ async function loadInboundSettingsByPhone(exotelNumber) {
     lastAccessed: Date.now(),
   };
 }
-
-
     }
 
     // For standalone usage
