@@ -776,7 +776,7 @@ function normalizeLanguageCode(languageCode) {
 
         const turnTime = Date.now() - turnStart;
         console.log(`⏱️ Turn completed: ${turnTime}ms`);
-        console.log(`🎯 Voice setting used: "${settings.sarvamVoice}" → normalized: "${(settings.sarvamVoice || "arya").toLowerCase()}"`);
+
         
         // Update metrics
         stateManager.metrics.avgLatency = 
@@ -809,7 +809,6 @@ function normalizeLanguageCode(languageCode) {
     // ============================================================================
 
     async function speakText(text, state, exotelWs, ttsOptions = {}) {
-        
     if (!exotelWs || exotelWs.readyState !== 1) return;
     if (!text || text.trim().length === 0) return;
 

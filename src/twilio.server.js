@@ -317,9 +317,32 @@ class ElevenLabsTTS {
         })
       });
 
+      // if (!response.ok) {
+      //   throw new Error(`ElevenLabs API error: ${response.status}`);
+      // }
       if (!response.ok) {
-        throw new Error(`ElevenLabs API error: ${response.status}`);
-      }
+  let rawBody = "";
+  let jsonBody = null;
+
+  try {
+    rawBody = await response.text();
+    try {
+      jsonBody = JSON.parse(rawBody);
+    } catch (_) {}
+  } catch (_) {}
+
+  console.error("❌ ElevenLabs API ERROR (FULL DUMP)");
+  console.error("Status:", response.status);
+  console.error("Status Text:", response.statusText);
+  console.error("URL:", response.url);
+  console.error("Headers:", Object.fromEntries(response.headers.entries()));
+  console.error("Raw Body:", rawBody);
+  if (jsonBody) console.error("Parsed JSON:", jsonBody);
+
+  // IMPORTANT: throw AFTER logging
+  throw new Error(`ElevenLabs API error ${response.status}`);
+}
+
 
       const reader = response.body.getReader();
       let totalBytes = 0;
@@ -384,8 +407,12 @@ class ElevenLabsTTS {
 
       return totalBytes;
     } catch (error) {
-      console.error("[ElevenLabs TTS] Error:", error.message);
-      return 0;
+      // console.error("[ElevenLabs TTS] Error:", error.message);
+      // return 0;
+       console.error("🔥 [ElevenLabs TTS] Fatal Error");
+  console.error("Message:", error.message);
+  console.error("Stack:", error.stack);
+  return 0;
     }
   }
 }
