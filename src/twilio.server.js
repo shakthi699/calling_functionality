@@ -1307,7 +1307,7 @@ export async function registerTwilio(fastify, deps) {
       firstMessage,
       maxTokens,
       agentId,
-      sarvamVoice = "karun",
+      sarvamVoice,
       elevenLabsVoiceId,
       elevenLabsSpeed = 1.2,
       elevenLabsStability = 1.0,
