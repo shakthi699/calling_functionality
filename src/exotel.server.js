@@ -1705,11 +1705,29 @@ function normalizeLanguageCode(languageCode) {
                     //     voiceId: settings.elevenLabsVoiceId || "hpp4J3VqNfWAUOO0d1Us",
                     //     aggressive: true
                     // });
-                    await speakText(settings.firstMessage, state, exotelWs, {
-  language: settings.transcriberLanguage,
-  voice: (settings.sarvamVoice || "arya").toLowerCase(),  // Normalize to lowercase
+//                     await speakText(settings.firstMessage, state, exotelWs, {
+//   language: settings.transcriberLanguage,
+//   voice: (settings.sarvamVoice || "arya").toLowerCase(),  // Normalize to lowercase
+//   aggressive: true
+// });
+const selectedVoice = (settings.sarvamVoice || "arya").toLowerCase();
+const selectedLanguage = settings.sarvamLanguage || settings.transcriberLanguage || "kn";
+
+console.log("🎙️ ===== INBOUND GREETING DEBUG =====");
+console.log("Call SID:", state.callSid);
+console.log("Agent ID:", settings.agentId);
+console.log("Call Type:", settings.callType);
+console.log("Selected Voice:", selectedVoice);
+console.log("Selected Language:", selectedLanguage);
+console.log("First Message:", settings.firstMessage);
+console.log("=====================================");
+
+await speakText(settings.firstMessage, state, exotelWs, {
+  language: selectedLanguage,
+  voice: selectedVoice,
   aggressive: true
 });
+
 
                     } catch (error) {
                     console.error("Greeting error:", error);
@@ -1947,8 +1965,8 @@ async function loadInboundSettingsByPhone(exotelNumber) {
     firstMessage,
     calendarConfig,
     knowledgeChunks,
-    sarvamVoice: "karun",  // Default Sarvam voice for inbound calls
-    sarvamLanguage: "hi",
+    sarvamVoice: row.voice || "karun",
+    sarvamLanguage: row.language || "hi",
     transcriberLanguage: row.transcriber_language || "kn",
     transcriberModel: "nova-3",
     callType: "inbound",

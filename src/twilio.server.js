@@ -850,6 +850,11 @@ You are a helpful AI assistant. Current UTC time: ${currentTime}. Current time i
 - Only provide essential information
 - Avoid long explanations unless specifically asked
 
+**Identity Rule:**
+- Introduce yourself ONLY once at the beginning of the call.
+- Do NOT repeat your name unless asked.
+
+
 **Email Collection:**
 When collecting emails, be efficient:
 1. Ask them to spell it out clearly
@@ -1141,6 +1146,13 @@ Keep responses under 50 words. Be conversational and quick.`.trim();
     { role: "user", content: cleaned }
   ];
 
+  if (state.introduced) {
+  messages.unshift({
+    role: "system",
+    content: "You have already introduced yourself. Do NOT introduce yourself again unless asked who you are."
+  });
+}
+
   if (!twilioWs || twilioWs.readyState !== WebSocket.OPEN) {
     state.botSpeaking = false;
     return;
@@ -1411,6 +1423,7 @@ export async function registerTwilio(fastify, deps) {
         lastUserActivity: Date.now(),
         lastBotSpeechEnd: 0,
         stt: null,
+         introduced: false 
       };
 
       const connectDeepgram = async () => {
@@ -1482,6 +1495,7 @@ export async function registerTwilio(fastify, deps) {
                 elevenLabsSimilarityBoost: settings.elevenLabsSimilarityBoost,
                 pace: 1.15
               });
+              state.introduced = true; 
             }, 500);
           }
 
@@ -1534,6 +1548,7 @@ export async function registerTwilio(fastify, deps) {
   });
 
   fastify.all("/inbound-call", async (req, reply) => {
+     console.log("RAW BODY:", req.body);
     const incomingNumber = req.body.To;
     const fromNumber = req.body.From;
     const callSid = req.body.CallSid;
