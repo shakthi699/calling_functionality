@@ -179,6 +179,8 @@ const PORT = process.env.PORT || 8080;
 
     class OptimizedElevenLabsTTS {
     constructor(apiKey) {
+        console.log("🔍 ElevenLabs Key Exists:", !!apiKey);
+        console.log("🔍 ElevenLabs Key Prefix:", apiKey?.slice(0, 6));
         this.apiKey = apiKey;
         this.activeConnections = new Map();
         this.metrics = {

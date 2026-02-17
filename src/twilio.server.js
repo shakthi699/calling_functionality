@@ -283,6 +283,8 @@ class SarvamTTS {
 
 class ElevenLabsTTS {
   constructor(apiKey) {
+    console.log("🔍 ElevenLabs Key Exists:", !!apiKey);
+    console.log("🔍 ElevenLabs Key Prefix:", apiKey?.slice(0, 6));
     if (!apiKey) throw new Error("ELEVENLABS_API_KEY missing");
     this.apiKey = apiKey;
     this.baseUrl = "https://api.elevenlabs.io/v1";
