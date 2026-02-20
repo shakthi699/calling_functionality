@@ -179,8 +179,6 @@ const PORT = process.env.PORT || 8080;
 
     class OptimizedElevenLabsTTS {
     constructor(apiKey) {
-        console.log("🔍 ElevenLabs Key Exists:", !!apiKey);
-        console.log("🔍 ElevenLabs Key Prefix:", apiKey?.slice(0, 6));
         this.apiKey = apiKey;
         this.activeConnections = new Map();
         this.metrics = {
@@ -1390,8 +1388,15 @@ function normalizeLanguageCode(languageCode) {
     });
     
     const finalVoice = typeof sarvamVoice === "string" && sarvamVoice.trim() ? sarvamVoice.trim().toLowerCase() : "karun";
-    console.log(`✅ Call created with Sarvam voice: "${finalVoice}"`);
+    // console.log(`✅ Call created with Sarvam voice: "${finalVoice}"`);
+    const langBase = (transcriberLanguage || "kn").split("-")[0];
+const willUseSarvam = SARVAM_LANGS.includes(langBase);
 
+if (willUseSarvam) {
+  console.log(`✅ Call created → Using Sarvam voice: "${finalVoice}"`);
+} else {
+  console.log(`✅ Call created → Using ElevenLabs voiceId: "${elevenLabsVoiceId}"`);
+}
     stateManager.metrics.totalCalls++;
     stateManager.metrics.activeCalls++;
 
@@ -1722,6 +1727,11 @@ console.log("Call Type:", settings.callType);
 console.log("Selected Voice:", selectedVoice);
 console.log("Selected Language:", selectedLanguage);
 console.log("First Message:", settings.firstMessage);
+
+   console.log("🟡 ===== FINAL GREETING VALUES =====");
+      console.log("Voice used:", selectedVoice);
+      console.log("Language used:", selectedLanguage);
+      console.log("=====================================");
 console.log("=====================================");
 
 await speakText(settings.firstMessage, state, exotelWs, {
@@ -1955,27 +1965,43 @@ async function loadInboundSettingsByPhone(exotelNumber) {
     row.greeting_message ||
     "Hello! How can I help you today?";
 
-  return {
-    // Identity
-    agentId: row.agent_id,
-    agentName: row.name,
-    aiModel: "gpt-4o-mini",
-    temperature: 0.7,
-    maxTokens: 180,
-    systemPrompt: createEnhancedSystemPrompt(agentPrompt, calendarConfig),
-    agentPrompt,
-    firstMessage,
-    calendarConfig,
-    knowledgeChunks,
-    sarvamVoice: row.voice || "karun",
-    sarvamLanguage: row.language || "hi",
-    transcriberLanguage: row.transcriber_language || "kn",
-    transcriberModel: "nova-3",
-    callType: "inbound",
-    provider: "exotel",
-    createdAt: Date.now(),
-    lastAccessed: Date.now(),
-  };
+// Extract from conversation_config (SINGLE SOURCE OF TRUTH)
+const agentLanguage =
+  row.conversation_config?.agent?.language ||
+  row.conversation_config?.asr?.language ||
+  "kn";
+
+const agentVoice =
+  row.conversation_config?.tts?.voice_id ||
+  "karun";
+console.log("🟢 ===== INBOUND SETTINGS DEBUG =====");
+console.log("Phone:", exotelNumber);
+console.log("Agent ID:", row.agent_id);
+console.log("Voice from conversation_config:", agentVoice);
+console.log("Language from conversation_config:", agentLanguage);
+console.log("ASR Model:", row.conversation_config?.asr?.model);
+console.log("=====================================");
+
+return {
+  agentId: row.agent_id,
+  agentName: row.name,
+  aiModel: "gpt-4o-mini",
+  temperature: 0.7,
+  maxTokens: 180,
+  systemPrompt: createEnhancedSystemPrompt(agentPrompt, calendarConfig),
+  agentPrompt,
+  firstMessage,
+  calendarConfig,
+  knowledgeChunks,
+  sarvamVoice: agentVoice.toLowerCase(),
+  sarvamLanguage: agentLanguage,
+  transcriberLanguage: agentLanguage,
+  transcriberModel: row.conversation_config?.asr?.model || "nova-3",
+  callType: "inbound",
+  provider: "exotel",
+  createdAt: Date.now(),
+  lastAccessed: Date.now(),
+};
 }
     }
 

@@ -22,7 +22,6 @@ const fastify = Fastify({
 });
 
 
-
 fastify.addHook("onRequest", async (_, reply) => {
   reply.header("Cache-Control", "no-store");
 });

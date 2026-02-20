@@ -65,10 +65,17 @@ const INDIAN_LANGUAGES = {
   'od-IN': 'od-IN',
 };
 
-function isIndianLanguage(languageCode) {
+// function isIndianLanguage(languageCode) {
+//   if (!languageCode) return false;
+//   const normalized = languageCode.toLowerCase();
+//   return normalized in INDIAN_LANGUAGES;
+// }
+const SARVAM_LANGS = ["kn", "te", "mr", "gu", "bn", "ml", "pa"];
+
+function shouldUseSarvam(languageCode) {
   if (!languageCode) return false;
-  const normalized = languageCode.toLowerCase();
-  return normalized in INDIAN_LANGUAGES;
+  const base = languageCode.toLowerCase().split("-")[0];
+  return SARVAM_LANGS.includes(base);
 }
 
 function normalizeLanguageCode(languageCode) {
@@ -283,8 +290,6 @@ class SarvamTTS {
 
 class ElevenLabsTTS {
   constructor(apiKey) {
-    console.log("🔍 ElevenLabs Key Exists:", !!apiKey);
-    console.log("🔍 ElevenLabs Key Prefix:", apiKey?.slice(0, 6));
     if (!apiKey) throw new Error("ELEVENLABS_API_KEY missing");
     this.apiKey = apiKey;
     this.baseUrl = "https://api.elevenlabs.io/v1";
@@ -433,7 +438,7 @@ class TTSManager {
     const languageCode = options.languageCode || options.transcriberLanguage;
     
     // Determine which TTS to use based on language
-    if (isIndianLanguage(languageCode)) {
+    if (shouldUseSarvam(languageCode)) {
       console.log(`🎤 Using Sarvam TTS for language: ${languageCode}`);
       return await this.sarvamTTS.generateAndStream(text, {
         voice: options.sarvamVoice || options.voice || "karun",
@@ -1283,6 +1288,23 @@ async function loadInboundSettingsByPhone(phoneNumber) {
       preFetchAgentKnowledge(agent.id),
     ]);
 
+    // Extract from conversation_config (SINGLE SOURCE OF TRUTH)
+const agentLanguage =
+  agent.conversation_config?.agent?.language ||
+  agent.conversation_config?.asr?.language ||
+  "kn";
+
+const agentVoice =
+  agent.conversation_config?.tts?.voice_id ||
+  "karun";
+
+console.log("🟢 ===== TWILIO INBOUND DEBUG =====");
+console.log("Phone:", phoneNumber);
+console.log("Agent ID:", agent.id);
+console.log("Voice from conversation_config:", agentVoice);
+console.log("Language from conversation_config:", agentLanguage);
+console.log("===================================");
+
     return {
       agentId: agent.id,
       agentName: agent.name,
@@ -1293,9 +1315,12 @@ async function loadInboundSettingsByPhone(phoneNumber) {
       firstMessage: firstMessage,
       calendarConfig,
       knowledgeChunks,
-      sarvamVoice: config.voice || "karun",
-      transcriberLanguage: config.language || "en-IN",
-      transcriberModel: "nova-3",
+      // sarvamVoice: config.voice || "karun",
+      // transcriberLanguage: config.language || "en-IN",
+      // transcriberModel: "nova-3",
+       sarvamVoice: agentVoice.toLowerCase(),
+  transcriberLanguage: agentLanguage,
+  transcriberModel: agent.conversation_config?.asr?.model || "nova-3",
       // ElevenLabs settings (if configured)
       elevenLabsVoiceId: config.elevenlabs_voice_id || "pNInz6obpgDQGcFmaJgB",
       elevenLabsSpeed: config.elevenlabs_speed || 1.2,
@@ -1486,6 +1511,11 @@ export async function registerTwilio(fastify, deps) {
               }
 
               const firstMsg = settings.firstMessage || "Hello! How can I help?";
+              console.log("🟡 ===== TWILIO GREETING DEBUG =====");
+console.log("Voice used:", settings.sarvamVoice);
+console.log("Language used:", settings.transcriberLanguage);
+console.log("====================================");
+
               await speakText(firstMsg, state, twilioWs, {
                 transcriberLanguage: settings.transcriberLanguage,
                 languageCode: settings.transcriberLanguage,
