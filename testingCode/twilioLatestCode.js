@@ -63,8 +63,12 @@ const INDIAN_LANGUAGES = {
   'od-IN': 'od-IN',
 };
 
-
-const SARVAM_LANGS = ["kn", "te", "mr", "gu", "bn", "ml", "pa","ta","hi"];
+// function isIndianLanguage(languageCode) {
+//   if (!languageCode) return false;
+//   const normalized = languageCode.toLowerCase();
+//   return normalized in INDIAN_LANGUAGES;
+// }
+const SARVAM_LANGS = ["en","hi","kn", "te", "mr", "gu", "bn", "ml", "pa"];
 
 function shouldUseSarvam(languageCode) {
   if (!languageCode) return false;
@@ -200,51 +204,34 @@ class SarvamTTS {
 
     let socket;
     try {
-      if (state._pendingTTSSocket) {
-        try {
-          socket = await state._pendingTTSSocket;
-          state._pendingTTSSocket = null;
-          console.log("⚡ Reusing pre-warmed Sarvam socket");
-        } catch (e) {
-          socket = null;
+      socket = await this.client.textToSpeechStreaming.connect({
+        model: this.model,
+        send_completion_event: true,
+      });
+
+      await socket.waitForOpen();
+
+      const configMessage = {
+        type: "config",
+        data: {
+          target_language_code: languageCode,
+          speaker: voice,
+          pitch: pitch,
+          pace: pace,
+          output_audio_codec: "mulaw",
+          speech_sample_rate: 8000,
+          min_buffer_size: 30,
+          max_chunk_length: 100
         }
-      }
+      };
 
-     // REPLACE WITH:
-      const isReused = !!socket;
-
-      if (!socket) {
-        socket = await this.client.textToSpeechStreaming.connect({
-          model: this.model,
-          send_completion_event: true,
-        });
-        await socket.waitForOpen();
-      }
-
-      if (!isReused) {
-        const configMessage = {
-          type: "config",
-          data: {
-            target_language_code: languageCode,
-            speaker: voice,
-            pitch: pitch,
-            pace: pace,
-            output_audio_codec: "mulaw",
-            speech_sample_rate: 8000,
-            min_buffer_size: 30,
-            max_chunk_length: 100
-          }
-        };
-
-        if (socket.socket && typeof socket.socket.send === 'function') {
-          socket.socket.send(JSON.stringify(configMessage));
-          console.log(`✅ Sarvam Config: lang=${languageCode}, voice=${voice}, pace=${pace}`);
-        } else {
-          console.error("[Sarvam TTS] Cannot access socket.socket");
-        }
+      if (socket.socket && typeof socket.socket.send === 'function') {
+        socket.socket.send(JSON.stringify(configMessage));
+        console.log(`✅ Sarvam Config: lang=${languageCode}, voice=${voice}, pace=${pace}`);
       } else {
-        console.log(`✅ Sarvam Config: skipped (pre-warmed socket already configured)`);
+        console.error("[Sarvam TTS] Cannot access socket.socket");
       }
+
       let totalBytes = 0;
       let isStreaming = true;
 
@@ -312,28 +299,6 @@ class SarvamTTS {
       return 0;
     }
   }
-
-  async preOpenSocket(options = {}) {
-  const socket = await this.client.textToSpeechStreaming.connect({
-    model: this.model,
-    send_completion_event: true,
-  });
-  await socket.waitForOpen();
-  // send config immediately
-  socket.socket.send(JSON.stringify({
-    type: "config",
-    data: {
-      target_language_code: normalizeLanguageCode(options.languageCode) || "en-IN",
-      speaker: options.voice || "karun",
-      pitch: 0.0, pace: 1.15,
-      output_audio_codec: "mulaw",
-      speech_sample_rate: 8000,
-      min_buffer_size: 30,
-      max_chunk_length: 100
-    }
-  }));
-  return socket; // caller stores this and passes it to generateAndStream
-}
 }
 
 // =============================================================================
@@ -513,7 +478,6 @@ class ElevenLabsTTS {
               speed: speed,
             },
           }),
-           signal: options.signal 
         }
       );
 
@@ -525,7 +489,7 @@ class ElevenLabsTTS {
         console.error("Body:", rawBody);
         throw new Error(`ElevenLabs API error ${response.status}: ${rawBody}`);
       }
-      console.time("TTS_FIRST_BYTE");
+
       const reader = response.body.getReader();
       let totalBytes = 0;
 
@@ -536,10 +500,6 @@ class ElevenLabsTTS {
       const CHUNK_BYTES = CHUNK_SAMPLES * 2; // 16-bit = 2 bytes per sample
 
       while (true) {
-        if (state.interrupted) {
-  console.log("🛑 HARD STOP TTS LOOP");
-  break;
-}
         const { done, value } = await reader.read();
 
         if (state.interrupted || state.callEnded) {
@@ -661,7 +621,6 @@ class DeepgramSTT {
     this.onTranscript = null;
     this.onInterruption = null;
     this.lastTranscriptTime = 0;
-    this.lastFinalTranscript = "";
   }
 
   async connect() {
@@ -675,7 +634,7 @@ class DeepgramSTT {
       interim_results: true,
       smart_format: true,
       vad_events: true,
-      endpointing: 100,
+      endpointing: 200,
       utterance_end_ms: 1000,
     });
 
@@ -684,37 +643,30 @@ class DeepgramSTT {
       console.log("✅ Deepgram STT connected");
     });
 
-   this.socket.on(LiveTranscriptionEvents.Transcript, (data) => {
-  const text = data.channel?.alternatives?.[0]?.transcript;
-
-  if (!text || !text.trim()) return;
-
+    this.socket.on(LiveTranscriptionEvents.Transcript, (data) => {
+      const text = data.channel?.alternatives?.[0]?.transcript;
+      
+      if (text && text.trim()) {
+        const now = Date.now();
+        
+       if (!data.speech_final && this.onInterruption) {
   const cleaned = text.trim();
 
-  // ============================================================
-  // 🛑 INTERRUPTION (ONLY FOR INTERIM)
-  // ============================================================
-  if (!data.speech_final) {
-    if (this.onInterruption) {
-  this.onInterruption(cleaned);
-    }
-    return; // 🔥 VERY IMPORTANT (stop here for interim)
+  // Ignore very short interim speech
+  const words = cleaned.split(/\s+/).filter(Boolean);
+
+  if (cleaned.length > 6 && words.length >= 2) {
+    this.onInterruption(cleaned);
   }
-
-  // ============================================================
-  // ✅ FINAL TRANSCRIPT (ONLY ONCE)
-  // ============================================================
-
-  // ❌ prevent duplicate same text
-  if (cleaned === this.lastFinalTranscript) return;
-
-  this.lastFinalTranscript = cleaned;
-
-  // ✅ send ONLY once
-  if (this.onTranscript) {
-    this.onTranscript(cleaned, true);
-  }
-});
+}
+        if (data.speech_final && this.onTranscript) {
+          if (now - this.lastTranscriptTime > 300) {
+            this.lastTranscriptTime = now;
+            this.onTranscript(text.trim(), true);
+          }
+        }
+      }
+    });
 
     this.socket.on(LiveTranscriptionEvents.Error, (err) => {
       console.error("❌ Deepgram error:", err.message);
@@ -804,7 +756,7 @@ async function aiResponse(messages, model, temperature, maxTokens, onPartial) {
       partial += clean;
 
       // 🚀 SPEAK EARLY
-      if (!sent && partial.length > 5 && onPartial) {
+      if (!sent && partial.length > 20 && onPartial) {
         sent = true;
         onPartial(partial);
       }
@@ -837,68 +789,22 @@ async function embedText(text) {
   }
 }
 
-// async function preFetchAgentKnowledge(agentId) {
-//   try {
-//     const queryEmbedding = await embedText("general information about products and services");
-//     if (!queryEmbedding) return [];
-// console.log("Agent ID:", agentId);
-//     const results = await index.query({
-//       vector: queryEmbedding,
-//       topK: 50,
-//       includeMetadata: true,
-//       filter: { agent_id: agentId },
-//     });
-// console.log("Pinecone matches:", results.matches.length);
-//     return results.matches.map(match => ({
-//       content: match.metadata.content,
-//       _lc: (match.metadata.content || "").toLowerCase(),
-//     }));
-//   } catch (error) {
-//     console.error('Error pre-fetching knowledge:', error.message);
-//     return [];
-//   }
-// }
-
 async function preFetchAgentKnowledge(agentId) {
   try {
     const queryEmbedding = await embedText("general information about products and services");
     if (!queryEmbedding) return [];
 
-    // ✅ GET KB IDs
-    const kbResult = await db.query(
-      `SELECT knowledge_base_id 
-       FROM agent_knowledge_map 
-       WHERE agent_id = $1`,
-      [agentId]
-    );
-
-    const kbIds = kbResult.rows.map(r => r.knowledge_base_id);
-
-    console.log("Agent ID:", agentId);
-    console.log("KB IDs:", kbIds);
-
-    if (kbIds.length === 0) {
-      console.log("⚠️ No KB linked to agent");
-      return [];
-    }
-
-    // ✅ QUERY PINECONE
     const results = await index.query({
       vector: queryEmbedding,
       topK: 50,
       includeMetadata: true,
-      filter: {
-        knowledge_base_id: { $in: kbIds }
-      }
+      filter: { agent_id: agentId },
     });
-
-    console.log("Pinecone matches:", results.matches.length);
 
     return results.matches.map(match => ({
       content: match.metadata.content,
       _lc: (match.metadata.content || "").toLowerCase(),
     }));
-
   } catch (error) {
     console.error('Error pre-fetching knowledge:', error.message);
     return [];
@@ -1358,26 +1264,20 @@ async function speakText(text, state, twilioWs, ttsOptions = {}) {
     state.botSpeaking = false;
     return;
   }
-// ✅ RESET ONLY WHEN NEW SPEECH STARTS
-state.interrupted = false;
-state.botSpeaking = true;
 
-// 🔥 CREATE CONTROLLER HERE
-state.ttsAbortController = new AbortController();
+  state.interrupted = false;
+  state.botSpeaking = true;
 
   try {
-    // sendClearEvent(twilioWs, state.streamSid);
-    // await new Promise(r => setTimeout(r, 10));
+    sendClearEvent(twilioWs, state.streamSid);
+    await new Promise(r => setTimeout(r, 10));
 
-  await ttsManager.generateAndStream(
-  text,
-  {
-    ...ttsOptions,
-    signal: state.ttsAbortController?.signal // 🔥 ADD THIS
-  },
-  twilioWs,
-  state
-);
+    const totalBytes = await ttsManager.generateAndStream(
+      text,
+      ttsOptions,
+      twilioWs,
+      state
+    );
 
     if (state.interrupted) {
       sendClearEvent(twilioWs, state.streamSid);
@@ -1389,6 +1289,504 @@ state.ttsAbortController = new AbortController();
     state.lastBotSpeechEnd = Date.now();
   }
 }
+
+// =============================================================================
+// TURN PROCESSING
+// =============================================================================
+
+// async function processTurn(userText, state, twilioWs, callSettings, sessions, streamToCallMap) {
+
+//   // 🔥 If workflow exists, use workflow instead of OpenAI
+// // if (state.workflowEngine) {
+
+// //   const engine = state.workflowEngine;
+
+// //   if (!state.currentNode) return;
+
+// //   console.log("➡️ Current node:", state.currentNode.name);
+
+// //   let nextNode = null;
+
+// //   // 🔥 If current is conversation, first move via direct edge
+// //   if (state.currentNode.type === "conversation") {
+
+// //     const directEdge = engine.edges.find(
+// //       e =>
+// //         e.from_node_id === state.currentNode.id &&
+// //         e.condition?.type === "direct"
+// //     );
+
+// //     if (directEdge) {
+// //       nextNode = engine.getNodeById(directEdge.to_node_id);
+// //       console.log("➡️ Moving to next node:", nextNode?.name);
+// //     }
+// //   }
+
+// //   // 🔥 If next is decision → evaluate user text
+// //   if (nextNode?.type === "decision") {
+// //     nextNode = await engine.aiSelectNextNode(
+// //       nextNode.id,
+// //       userText,
+// //       state
+// //     );
+// //   }
+
+// //   if (!nextNode) {
+// //     console.log("⚠️ No next node resolved");
+// //     return;
+// //   }
+
+// //   state.currentNode = nextNode;
+
+// //   await engine.executeNode(
+// //     nextNode,
+// //     state,
+// //     twilioWs,
+// //     speakText,
+// //      null,
+// //   userText
+// //   );
+// //   return;
+// // }
+//   if (!userText?.trim()) return;
+// //  if (state.awaitingEmailConfirmation) {
+
+// //   const text = userText.toLowerCase();
+// // if (text.includes("yes") || text.includes("correct")) {
+
+// //   const callSid = streamToCallMap.get(state.streamSid);
+
+// //   console.log("✅ EMAIL CONFIRMED:", state.pendingEmail);
+
+// //   await db.query(
+// //     `UPDATE campaign_logs
+// //      SET escalation_status = TRUE,
+// //          escalation_email = $1
+// //      WHERE call_id = $2`,
+// //     [state.pendingEmail, callSid]
+// //   );
+
+// //   await speakText(
+// //     `Thank you. Our support team will contact you shortly at ${state.pendingEmail}.`,
+// //     state,
+// //     twilioWs,
+// //     {
+// //       languageCode: state.transcriberLanguage,
+// //       sarvamVoice: state.sarvamVoice
+// //     }
+// //   );
+
+// //   // reset escalation state
+// //   state.awaitingEmailConfirmation = false;
+// //   state.awaitingEscalationEmail = false;
+// //   state.pendingEmail = null;
+// //    state.emailBuffer = "";
+
+// //   console.log("📥 Email stored in DB");
+
+// //   return;
+// // }
+// // if (text.includes("no")) {
+
+// //   console.log("❌ EMAIL REJECTED BY USER");
+
+// //   state.pendingEmail = null;
+// //   state.awaitingEmailConfirmation = false;
+// //   state.awaitingEscalationEmail = true;
+// //   state.emailBuffer = "";
+
+// //   await speakText(
+// //     "Sorry about that. Could you repeat your email slowly?",
+// //     state,
+// //     twilioWs,
+// //     {
+// //       languageCode: state.transcriberLanguage,
+// //       sarvamVoice: state.sarvamVoice
+// //     }
+// //   );
+
+// //   return;
+// // }
+// // }
+//   const streamSid = state.streamSid;
+//   const callSid = streamToCallMap.get(streamSid);
+//   const settings = callSettings.get(callSid);
+  
+//   if (!settings) {
+//     console.warn(`[processTurn] No settings for ${streamSid}`);
+//     return;
+//   }
+
+//   if (state.botSpeaking) {
+//     await new Promise(r => setTimeout(r, 100));
+//   }
+
+//   const cleaned = userText.trim();
+//   const words = cleaned.split(/\s+/).filter(Boolean);
+  
+//   if (cleaned.length < 5 || words.length < 2) return;
+
+//   // INTENT DETECTION
+// const intent = await detectIntent(cleaned);
+
+// if (intent === "escalation" && !state.awaitingEscalationEmail) {
+
+//   console.log("🚨 Escalation intent detected");
+
+//   state.awaitingEscalationEmail = true;
+
+// await speakText(
+//   "Sure, I can connect you with our support team. Could you please provide your email address?",
+//   state,
+//   twilioWs,
+//   {
+//     transcriberLanguage: state.transcriberLanguage,
+//     languageCode: state.transcriberLanguage,
+//     sarvamVoice: state.sarvamVoice,
+//     voice: state.sarvamVoice,
+//     elevenLabsVoiceId: state.elevenLabsVoiceId,
+//     elevenLabsSpeed: state.elevenLabsSpeed,
+//     elevenLabsStability: state.elevenLabsStability,
+//     elevenLabsSimilarityBoost: state.elevenLabsSimilarityBoost,
+//     pace: 1.15
+//   }
+// );
+//   return;
+// }
+
+//  if (state.awaitingEmailConfirmation) {
+
+// //   const text = userText.toLowerCase();
+// // if (text.includes("yes") || text.includes("correct")) {
+//  let confirmText = userText.toLowerCase();
+//   try {
+//     const confirmRes = await openai.chat.completions.create({
+//       model: "gpt-4o-mini",
+//       temperature: 0,
+//       max_tokens: 10,
+//       messages: [
+//         {
+//           role: "system",
+//           content: `Translate to English. Return ONLY one word: yes, no, or unclear.`
+//         },
+//         { role: "user", content: userText }
+//       ]
+//     });
+//     confirmText = confirmRes.choices[0].message.content.trim().toLowerCase();
+//     console.log(`🌍 Confirmation translated: "${userText}" → "${confirmText}"`);
+//   } catch (err) {
+//     console.error("Confirmation translation error:", err.message);
+//   }
+
+// if (confirmText.includes("yes") || confirmText.includes("correct")) {
+
+//   const callSid = streamToCallMap.get(state.streamSid);
+
+//   console.log("✅ EMAIL CONFIRMED:", state.pendingEmail);
+
+//   await db.query(
+//     `UPDATE campaign_logs
+//      SET escalation_status = TRUE,
+//          escalation_email = $1
+//      WHERE call_id = $2`,
+//     [state.pendingEmail, callSid]
+//   );
+
+//   await speakText(
+//     `Thank you. Our support team will contact you shortly at ${state.pendingEmail}.`,
+//     state,
+//     twilioWs,
+//     {
+//       languageCode: state.transcriberLanguage,
+//       sarvamVoice: state.sarvamVoice
+//     }
+//   );
+
+//   // reset escalation state
+//   state.awaitingEmailConfirmation = false;
+//   state.awaitingEscalationEmail = false;
+//   state.pendingEmail = null;
+//    state.emailBuffer = "";
+//   console.log("📥 Email stored in DB");
+
+//   return;
+// }
+// if (confirmText.includes("no") || confirmText.includes("incorrect")) {
+//   console.log("❌ EMAIL REJECTED BY USER");
+//   state.pendingEmail = null;
+//   state.awaitingEmailConfirmation = false;
+//   state.awaitingEscalationEmail = true;
+//   state.emailBuffer = "";
+
+//   await speakText(
+//     "Sorry about that. Could you repeat your email slowly?",
+//     state,
+//     twilioWs,
+//     {
+//       languageCode: state.transcriberLanguage,
+//       sarvamVoice: state.sarvamVoice
+//     }
+//   );
+//   return;
+// }
+// }
+
+// if (state.awaitingEscalationEmail) {
+
+//   // collect speech chunks
+//   state.emailBuffer = cleaned;
+
+//   clearTimeout(state.emailBufferTimer);
+
+//   state.emailBufferTimer = setTimeout(async () => {
+
+//   //  const combined = state.emailBuffer.toLowerCase().trim();
+// let combined = state.emailBuffer.toLowerCase().trim();
+
+//     // Translate to English first so email parsing works in any language
+//     try {
+//       const translationRes = await openai.chat.completions.create({
+//         model: "gpt-4o-mini",
+//         temperature: 0,
+//         max_tokens: 100,
+//         messages: [
+//           {
+//             role: "system",
+//             content: `Translate the following text to English.
+// If it contains an email address spoken aloud in any language,
+// convert it to a proper email format like "name@domain.com".
+// Words like "at", "ಎಟ್", "@", "ஆட்", "ऐट" mean @.
+// Words like "dot", "ಡಾಟ್", ".", "டாட்", "डॉट" mean .
+// Return ONLY the translated/converted text, nothing else.`
+//           },
+//           { role: "user", content: combined }
+//         ]
+//       });
+//       combined = translationRes.choices[0].message.content.trim().toLowerCase();
+//       console.log(`🌍 Email buffer translated: "${state.emailBuffer}" → "${combined}"`);
+//     } catch (err) {
+//       console.error("Email translation error:", err.message);
+//     }
+// console.log("📧 EMAIL BUFFER:", combined);
+
+// // 🚨 Only attempt extraction if speech looks like an email
+// const emailHint =
+//   combined.includes("@") ||
+//   combined.includes("gmail") ||
+//   combined.includes("dot") ||
+//   combined.includes("mail") ||
+//   combined.includes("yahoo") ||
+//   combined.includes("outlook");
+
+// if (!emailHint) {
+//   console.log("⚠️ Speech does not look like email yet, waiting...");
+//   return;
+// }
+
+// // normalize spoken email
+// const normalized = extractEmailFromSpeech(combined);
+
+// console.log("📧 EXTRACTED EMAIL:", normalized);
+
+// console.log("📧 EMAIL BUFFER:", combined);
+// console.log("📧 EXTRACTED EMAIL:", normalized);
+
+//     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+//   if (emailRegex.test(normalized)) {
+//    console.log("📩 Email detected, asking confirmation:", normalized);
+//   state.pendingEmail = normalized;
+//   state.awaitingEmailConfirmation = true;
+//   state.awaitingEscalationEmail = false;
+//   state.emailBuffer = "";
+
+//   await speakText(
+//     `Just to confirm, your email is ${normalized}. Is that correct?`,
+//     state,
+//     twilioWs,
+//     {
+//       languageCode: state.transcriberLanguage,
+//       sarvamVoice: state.sarvamVoice,
+//       pace: 1.15
+//     }
+//   );
+//   return;
+// } else {
+//       state.emailBuffer = "";
+//       await speakText(
+//         "I couldn't capture the email clearly. Could you please repeat it slowly?",
+//         state,
+//         twilioWs,
+//         {
+//           languageCode: state.transcriberLanguage,
+//           sarvamVoice: state.sarvamVoice
+//         }
+//       );
+//     }
+//   }, 1500); // wait for user to finish speaking
+
+//   return;
+// }
+
+
+// if (state.workflowEngine) {
+
+//   const engine = state.workflowEngine;
+
+//   if (!state.currentNode) return;
+
+//   console.log("➡️ Current node:", state.currentNode.name);
+
+//   let nextNode = null;
+
+//   // 🔥 If current is conversation, first move via direct edge
+//   if (state.currentNode.type === "conversation") {
+
+//     const directEdge = engine.edges.find(
+//       e =>
+//         e.from_node_id === state.currentNode.id &&
+//         e.condition?.type === "direct"
+//     );
+
+//     if (directEdge) {
+//       nextNode = engine.getNodeById(directEdge.to_node_id);
+//       console.log("➡️ Moving to next node:", nextNode?.name);
+//     }
+//   }
+
+//   // 🔥 If next is decision → evaluate user text
+//   if (nextNode?.type === "decision") {
+//     nextNode = await engine.aiSelectNextNode(
+//       nextNode.id,
+//       userText,
+//       state
+//     );
+//   }
+
+//   if (!nextNode) {
+//     console.log("⚠️ No next node resolved");
+//     return;
+//   }
+
+//   state.currentNode = nextNode;
+
+//   await engine.executeNode(
+//     nextNode,
+//     state,
+//     twilioWs,
+//     speakText,
+//      null,
+//   userText
+//   );
+//   return;
+// }
+//   console.log("👂 USER UTTERANCE", {
+//     callSid,
+//     streamSid,
+//     text: cleaned.slice(0, 500),
+//     ts: new Date().toISOString(),
+//   });
+
+//   const conversation = sessions.get(callSid) || [];
+
+//   let relevantChunks = [];
+//   if (settings.knowledgeChunks && settings.knowledgeChunks.length > 0) {
+//     relevantChunks = await getRelevantChunks(cleaned, settings.agentId, settings.knowledgeChunks, 2);
+//   }
+
+//   let kbContext = "";
+//   if (relevantChunks.length > 0) {
+//     kbContext = relevantChunks.map(chunk => chunk.content).join('\n\n');
+//   }
+
+//   const agentPrompt = settings.agentPrompt || settings.systemPrompt || "";
+
+//   const systemPrompt = `${agentPrompt}
+
+// ${kbContext ? `KNOWLEDGE:\n${kbContext}\n` : ''}
+
+// Keep responses under 50 words. Be conversational and quick.`.trim();
+
+//   const messages = [
+//     { role: "system", content: systemPrompt },
+//     ...conversation.slice(-6),
+//     { role: "user", content: cleaned }
+//   ];
+
+//   if (state.introduced) {
+//   messages.unshift({
+//     role: "system",
+//     content: "You have already introduced yourself. Do NOT introduce yourself again unless asked who you are."
+//   });
+// }
+
+//   if (!twilioWs || twilioWs.readyState !== WebSocket.OPEN) {
+//     state.botSpeaking = false;
+//     return;
+//   }
+
+//   let botReply;
+//   try {
+//     botReply = await aiResponse(
+//       messages,
+//       settings.aiModel || "gpt-4o-mini",
+//       settings.temperature ?? 0.7,
+//       100
+//     );
+
+//     botReply = (botReply || "").trim();
+    
+//     if (!botReply || botReply.length < 5) {
+//       botReply = "Could you say more about that?";
+//     }
+
+//   } catch (err) {
+//     console.error("[LLM error]", err.message);
+//     botReply = "Sorry, could you repeat that?";
+//   }
+
+//   if (state.interrupted) {
+//     state.interrupted = false;
+//     return;
+//   }
+
+//   state.lastUserActivity = Date.now();
+
+//   console.log("🤖 AI RESPONSE", {
+//     callSid,
+//     streamSid,
+//     text: botReply.slice(0, 500),
+//     ts: new Date().toISOString(),
+//   });
+
+//   await speakText(botReply, state, twilioWs, {
+//     // Pass all TTS options
+//     transcriberLanguage: settings.transcriberLanguage,
+//     languageCode: settings.transcriberLanguage,
+//     sarvamVoice: settings.sarvamVoice,
+//     voice: settings.sarvamVoice,
+//     elevenLabsVoiceId: settings.elevenLabsVoiceId,
+//     elevenLabsSpeed: settings.elevenLabsSpeed,
+//     elevenLabsStability: settings.elevenLabsStability,
+//     elevenLabsSimilarityBoost: settings.elevenLabsSimilarityBoost,
+//     pace: 1.15,
+//   });
+
+//   if (!state.interrupted) {
+//     conversation.push(
+//       { role: "user", content: cleaned, ts: Date.now() },
+//       { role: "assistant", content: botReply, ts: Date.now() }
+//     );
+
+//     if (conversation.length > 12) {
+//       conversation.splice(0, conversation.length - 10);
+//     }
+
+//     sessions.set(callSid, conversation);
+//   }
+  
+//   state.lastBotSpeechEnd = Date.now();
+// }
 
 
 async function processTurn(userText, state, twilioWs, callSettings, sessions, streamToCallMap) {
@@ -1404,9 +1802,9 @@ async function processTurn(userText, state, twilioWs, callSettings, sessions, st
     return;
   }
 
-  // if (state.botSpeaking) {
-  //   await new Promise(r => setTimeout(r, 10));
-  // }
+  if (state.botSpeaking) {
+    await new Promise(r => setTimeout(r, 10));
+  }
 
   const cleaned = userText.trim();
   const words = cleaned.split(/\s+/).filter(Boolean);
@@ -1805,14 +2203,7 @@ Examples:
   //   return;
   // }
 
-  // const intent = await detectIntent(cleaned);
-
-const [intent, relevantChunks] = await Promise.all([
-    detectIntent(cleaned),
-    (settings.knowledgeChunks?.length > 0)
-      ? getRelevantChunks(cleaned, settings.agentId, settings.knowledgeChunks, 2)
-      : Promise.resolve([])
-  ]);
+  const intent = await detectIntent(cleaned);
 
   if (intent === "escalation" && !state.awaitingEscalationEmail) {
 
@@ -1829,10 +2220,10 @@ const [intent, relevantChunks] = await Promise.all([
       // Get AI to respond helpfully to what the user said
       const conversation = sessions.get(callSid) || [];
 
-      // let relevantChunks = [];
-      // if (settings.knowledgeChunks && settings.knowledgeChunks.length > 0) {
-      //   relevantChunks = await getRelevantChunks(cleaned, settings.agentId, settings.knowledgeChunks, 2);
-      // }
+      let relevantChunks = [];
+      if (settings.knowledgeChunks && settings.knowledgeChunks.length > 0) {
+        relevantChunks = await getRelevantChunks(cleaned, settings.agentId, settings.knowledgeChunks, 2);
+      }
 
       const kbContext = relevantChunks.length > 0
         ? relevantChunks.map(c => c.content).join('\n\n')
@@ -1864,37 +2255,20 @@ The user wants to speak to a human agent. Before transferring, try to resolve th
         //   settings.temperature ?? 0.7,
         //   100
         // );
-//         botReply = await aiResponse(
-//   messages,
-//   settings.aiModel || "gpt-4o-mini",
-//   settings.temperature ?? 0.7,
-//   60,
-//   (partial) => {
-//     speakText(partial, state, twilioWs, {
-//       transcriberLanguage: settings.transcriberLanguage,
-//       languageCode: settings.transcriberLanguage,
-//       sarvamVoice: settings.sarvamVoice,
-//       elevenLabsVoiceId: settings.elevenLabsVoiceId,
-//     });
-//   }
-// );
-
-let fullReply = "";
-
-fullReply = await aiResponse(
+        botReply = await aiResponse(
   messages,
   settings.aiModel || "gpt-4o-mini",
-  settings.temperature ?? 0.3,
-  60
+  settings.temperature ?? 0.7,
+  60,
+  (partial) => {
+    speakText(partial, state, twilioWs, {
+      transcriberLanguage: settings.transcriberLanguage,
+      languageCode: settings.transcriberLanguage,
+      sarvamVoice: settings.sarvamVoice,
+      elevenLabsVoiceId: settings.elevenLabsVoiceId,
+    });
+  }
 );
-
-// 🔥 NOW SPEAK FULL RESPONSE
-await speakText(fullReply, state, twilioWs, {
-  transcriberLanguage: state.transcriberLanguage,
-  languageCode: state.transcriberLanguage,
-  sarvamVoice: state.sarvamVoice,
-  elevenLabsVoiceId: settings.elevenLabsVoiceId,
-});
         botReply = (botReply || "").trim();
         if (!botReply || botReply.length < 5) {
           botReply = "I understand you'd like to speak with someone. Let me first see if I can help you directly — what seems to be the issue?";
@@ -1904,17 +2278,17 @@ await speakText(fullReply, state, twilioWs, {
         botReply = "I understand you'd like to speak with someone. Let me first see if I can help you directly — what seems to be the issue?";
       }
 
-      //   speakText(botReply, state, twilioWs, {
-      //   transcriberLanguage: state.transcriberLanguage,
-      //   languageCode: state.transcriberLanguage,
-      //   sarvamVoice: state.sarvamVoice,
-      //   voice: state.sarvamVoice,
-      //   elevenLabsVoiceId: settings.elevenLabsVoiceId,
-      //   elevenLabsSpeed: settings.elevenLabsSpeed,
-      //   elevenLabsStability: settings.elevenLabsStability,
-      //   elevenLabsSimilarityBoost: settings.elevenLabsSimilarityBoost,
-      //   pace: 1.15
-      // });
+      await speakText(botReply, state, twilioWs, {
+        transcriberLanguage: state.transcriberLanguage,
+        languageCode: state.transcriberLanguage,
+        sarvamVoice: state.sarvamVoice,
+        voice: state.sarvamVoice,
+        elevenLabsVoiceId: settings.elevenLabsVoiceId,
+        elevenLabsSpeed: settings.elevenLabsSpeed,
+        elevenLabsStability: settings.elevenLabsStability,
+        elevenLabsSimilarityBoost: settings.elevenLabsSimilarityBoost,
+        pace: 1.15
+      });
 
       // Save to conversation history
       if (!state.interrupted) {
@@ -2411,10 +2785,10 @@ state.sessions = sessions;
 
   const conversation = sessions.get(callSid) || [];
 
-  // let relevantChunks = [];
-  // if (settings.knowledgeChunks && settings.knowledgeChunks.length > 0) {
-  //   relevantChunks = await getRelevantChunks(cleaned, settings.agentId, settings.knowledgeChunks, 2);
-  // }
+  let relevantChunks = [];
+  if (settings.knowledgeChunks && settings.knowledgeChunks.length > 0) {
+    relevantChunks = await getRelevantChunks(cleaned, settings.agentId, settings.knowledgeChunks, 2);
+  }
 
   let kbContext = "";
   if (relevantChunks.length > 0) {
@@ -2447,9 +2821,41 @@ Keep responses under 50 words. Be conversational and quick.`.trim();
     return;
   }
 
+  let botReply;
+  try {
+    botReply = await aiResponse(
+      messages,
+      settings.aiModel || "gpt-4o-mini",
+      settings.temperature ?? 0.7,
+      100
+    );
 
+    botReply = (botReply || "").trim();
 
-const ttsOpts = {
+    if (!botReply || botReply.length < 5) {
+      botReply = "Could you say more about that?";
+    }
+
+  } catch (err) {
+    console.error("[LLM error]", err.message);
+    botReply = "Sorry, could you repeat that?";
+  }
+
+  if (state.interrupted) {
+    state.interrupted = false;
+    return;
+  }
+
+  state.lastUserActivity = Date.now();
+
+  console.log("🤖 AI RESPONSE", {
+    callSid,
+    streamSid,
+    text: botReply.slice(0, 500),
+    ts: new Date().toISOString(),
+  });
+
+  await speakText(botReply, state, twilioWs, {
     transcriberLanguage: settings.transcriberLanguage,
     languageCode: settings.transcriberLanguage,
     sarvamVoice: settings.sarvamVoice,
@@ -2459,126 +2865,22 @@ const ttsOpts = {
     elevenLabsStability: settings.elevenLabsStability,
     elevenLabsSimilarityBoost: settings.elevenLabsSimilarityBoost,
     pace: 1.15,
-  };
-
-//   let fullBotReply = "";
-
-// try {
-//   const stream = await openai.chat.completions.create({
-//     model: settings.aiModel || "gpt-4o-mini",
-//     temperature: settings.temperature ?? 0.7,
-//     max_tokens: 100,
-//     messages,
-//     stream: true,
-//   });
-
-//   for await (const chunk of stream) {
-//     if (state.interrupted || state.callEnded) break;
-
-//     const token = chunk.choices?.[0]?.delta?.content ?? "";
-//     if (!token) continue;
-
-//     const clean = token
-//       .replace(/^(\s*[-*+]|\s*\d+\.)\s+/g, "")
-//       .replace(/[*_~`>#]/g, "")
-//       .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-
-//     fullBotReply += clean;
-//   }
-
-// } catch (err) {
-//   console.error("[LLM stream error]", err.message);
-//   fullBotReply = "Sorry, could you repeat that?";
-// }
-
-// if (state.interrupted) {
-//   state.interrupted = false;
-//   return;
-// }
-
-// fullBotReply = fullBotReply.trim();
-// if (!fullBotReply || fullBotReply.length < 5) {
-//   fullBotReply = "Could you say more about that?";
-// }
-
-// state.lastUserActivity = Date.now();
-
-// console.log("🤖 AI RESPONSE", {
-//   callSid,
-//   streamSid,
-//   text: fullBotReply.slice(0, 500),
-//   ts: new Date().toISOString(),
-// });
-
-// await speakText(fullBotReply, state, twilioWs, ttsOpts);
-
-// REPLACE WITH:
-// REPLACE WITH:
-let fullBotReply = "";
-
-try {
-  const stream = await openai.chat.completions.create({
-    model: settings.aiModel || "gpt-4o-mini",
-    temperature: settings.temperature ?? 0.7,
-    max_tokens: 100,
-    messages,
-    stream: true,
   });
 
-  for await (const chunk of stream) {
-    if (state.interrupted || state.callEnded) break;
+  if (!state.interrupted) {
+    conversation.push(
+      { role: "user", content: cleaned, ts: Date.now() },
+      { role: "assistant", content: botReply, ts: Date.now() }
+    );
 
-    const token = chunk.choices?.[0]?.delta?.content ?? "";
-    if (!token) continue;
+    if (conversation.length > 12) {
+      conversation.splice(0, conversation.length - 10);
+    }
 
-    const clean = token
-      .replace(/^(\s*[-*+]|\s*\d+\.)\s+/g, "")
-      .replace(/[*_~`>#]/g, "")
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-
-    fullBotReply += clean;
+    sessions.set(callSid, conversation);
   }
 
-} catch (err) {
-  console.error("[LLM stream error]", err.message);
-  fullBotReply = "Sorry, could you repeat that?";
-}
-
-if (state.interrupted) {
-  state.interrupted = false;
-  return;
-}
-
-fullBotReply = fullBotReply.trim();
-if (!fullBotReply || fullBotReply.length < 5) {
-  fullBotReply = "Could you say more about that?";
-}
-
-state.lastUserActivity = Date.now();
-
-console.log("🤖 AI RESPONSE", {
-  callSid,
-  streamSid,
-  text: fullBotReply.slice(0, 500),
-  ts: new Date().toISOString(),
-});
-
-// ✅ ONE single TTS call — no splits, no glitches
-await speakText(fullBotReply, state, twilioWs, ttsOpts);
-if (!state.interrupted) {
-  conversation.push(
-    { role: "user", content: cleaned, ts: Date.now() },
-    { role: "assistant", content: fullBotReply, ts: Date.now() }
-  );
-
-  if (conversation.length > 12) {
-    conversation.splice(0, conversation.length - 10);
-  }
-
-  sessions.set(callSid, conversation);
-}
-
-state.lastBotSpeechEnd = Date.now();
+  state.lastBotSpeechEnd = Date.now();
 }
 
 // =============================================================================
@@ -2786,10 +3088,9 @@ async function loadInboundSettingsByPhone(phoneNumber) {
       }
     }
 
-    const [calendarConfig, knowledgeChunks,workflow] = await Promise.all([
+    const [calendarConfig, knowledgeChunks] = await Promise.all([
       getAgentCalendarConfig(agent.id),
       preFetchAgentKnowledge(agent.id),
-      loadWorkflowByAgent(agent.id), 
     ]);
 
     // Extract from conversation_config (SINGLE SOURCE OF TRUTH)
@@ -2826,16 +3127,15 @@ console.log("===================================");
   transcriberLanguage: agentLanguage,
   transcriberModel: agent.conversation_config?.asr?.model || "nova-3",
       // ElevenLabs settings (if configured)
-      elevenLabsVoiceId: agent.conversation_config?.tts?.voice_id || "pNInz6obpgDQGcFmaJgB",
-  elevenLabsSpeed: parseFloat(agent.conversation_config?.tts?.speed) || 1.2,
-  elevenLabsStability: agent.conversation_config?.tts?.stability || 1.0,
-  elevenLabsSimilarityBoost: agent.conversation_config?.tts?.similarity_boost || 1.0,
+      elevenLabsVoiceId: config.elevenlabs_voice_id || "pNInz6obpgDQGcFmaJgB",
+      elevenLabsSpeed: config.elevenlabs_speed || 1.2,
+      elevenLabsStability: config.elevenlabs_stability || 1.0,
+      elevenLabsSimilarityBoost: config.elevenlabs_similarity_boost || 1.0,
       isInbound: true,
       agentPrompt: systemPrompt,
        twilioAccountSid: process.env.TWILIO_ACCOUNT_SID,
       twilioAuthToken: process.env.TWILIO_AUTH_TOKEN,
       twilioPhoneNumber: process.env.TWILIO_PHONE_NUMBER,
-       workflow: workflow || null, 
     };
   } catch (error) {
     console.error("Error loading inbound settings:", error.message);
@@ -2981,11 +3281,7 @@ console.log("===================================");
 // }
 
 
-const intentCache = new Map();
-
 async function detectIntent(text) {
-  const cacheKey = text.trim().toLowerCase().slice(0, 80);
-  if (intentCache.has(cacheKey)) return intentCache.get(cacheKey);
   try {
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -3044,13 +3340,8 @@ Examples:
         }
       ]
     });
-    // const intent = response.choices[0].message.content.trim().toLowerCase();
-    // console.log(`🎯 Intent: "${text.slice(0, 50)}" → ${intent}`);
-    // return intent;
     const intent = response.choices[0].message.content.trim().toLowerCase();
     console.log(`🎯 Intent: "${text.slice(0, 50)}" → ${intent}`);
-    intentCache.set(cacheKey, intent);
-    if (intentCache.size > 200) intentCache.clear();
     return intent;
 
   } catch (err) {
@@ -3238,65 +3529,29 @@ export async function registerTwilio(fastify, deps) {
           model: settings.transcriberModel,
         });
 
-      //   state.stt.onInterruption = (text) => {
-      //     if (state.awaitingEscalationEmail) return;
-      // if (state.botSpeaking && Date.now() - state.lastBotSpeechEnd > 500) {
-      //       console.log(`🛑 Interrupted: "${text.slice(0, 30)}..."`);
-      //       state.interrupted = true;
-      //       state.botSpeaking = false;
-      //       sendClearEvent(twilioWs, state.streamSid);
-      //     }
-      //   };
+        state.stt.onInterruption = (text) => {
+          if (state.awaitingEscalationEmail) return;
+      if (state.botSpeaking && Date.now() - state.lastBotSpeechEnd > 500) {
+            console.log(`🛑 Interrupted: "${text.slice(0, 30)}..."`);
+            state.interrupted = true;
+            state.botSpeaking = false;
+            sendClearEvent(twilioWs, state.streamSid);
+          }
+        };
 
-        // state.stt.onTranscript = (text) => {
-        //   state.lastUserActivity = Date.now();
+        state.stt.onTranscript = (text) => {
+          state.lastUserActivity = Date.now();
           
-          
-        //   if (!state.interrupted) {
-        //     processTurn(text, state, twilioWs, callSettings, sessions, streamToCallMap);
-        //   } else {
-        //     console.log(`📝 Processing interruption: "${text.slice(0, 30)}..."`);
-        //     state.interrupted = false;
-        //     processTurn(text, state, twilioWs, callSettings, sessions, streamToCallMap);
-        //   }
-        // };
-
-     
+          if (!state.interrupted) {
+            processTurn(text, state, twilioWs, callSettings, sessions, streamToCallMap);
+          } else {
+            console.log(`📝 Processing interruption: "${text.slice(0, 30)}..."`);
+            state.interrupted = false;
+            processTurn(text, state, twilioWs, callSettings, sessions, streamToCallMap);
+          }
+        };
 
         await state.stt.connect();
-
-           state.stt.onTranscript = (text) => {
-  state.lastUserActivity = Date.now();
-
-  // 🔥 Pre-warm TTS socket IMMEDIATELY on transcript
-  if (shouldUseSarvam(state.transcriberLanguage)) {
-    state._pendingTTSSocket = ttsManager.sarvamTTS.preOpenSocket({
-      languageCode: state.transcriberLanguage,
-      voice: state.sarvamVoice,
-    });
-  }
-
-  state.interrupted = false;
-  processTurn(text, state, twilioWs, callSettings, sessions, streamToCallMap);
-};
-
-        state.stt.onInterruption = (text) => {
-  console.log("🛑 INTERRUPT:", text);
-
-  state.interrupted = true;
-  state.botSpeaking = false;
-
-  // 🔥 CLEAR AUDIO IMMEDIATELY
-  sendClearEvent(twilioWs, state.streamSid);
-
-  // 🔥 ABORT TTS (FAST STOP)
-  if (state.ttsAbortController) {
-    try {
-      state.ttsAbortController.abort();
-    } catch (e) {}
-    state.ttsAbortController = null;
-  }
-};
       };
 
       twilioWs.on("message", async (raw) => {

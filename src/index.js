@@ -2,11 +2,10 @@ import Fastify from "fastify";
 import fastifyWs from "@fastify/websocket";
 import fastifyFormBody from "@fastify/formbody";
 import cors from "@fastify/cors";
-
-import { registerExotel } from "./exotel.server.js";
+import { registerExotel,preloadInboundSettings } from "./exotel.server.js";
 import { registerTwilio } from "./twilio.server.js";
 import workflowRoutes from "../routes/workflowRoutes.js";
-
+import multipart from '@fastify/multipart'
 
 
 export const sessions = new Map();
@@ -28,6 +27,7 @@ fastify.addHook("onRequest", async (_, reply) => {
 
 fastify.register(fastifyWs);
 fastify.register(fastifyFormBody);
+fastify.register(multipart)
 fastify.register(cors, { origin: "*" });
 
 
@@ -42,6 +42,8 @@ await registerExotel(fastify, {
   callSettings,
   streamToCallMap
 });
+
+await preloadInboundSettings();
 
 
 // Register workflow routes once (centrally)

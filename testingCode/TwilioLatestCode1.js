@@ -64,7 +64,7 @@ const INDIAN_LANGUAGES = {
 };
 
 
-const SARVAM_LANGS = ["kn", "te", "mr", "gu", "bn", "ml", "pa","ta","hi"];
+const SARVAM_LANGS = ["kn", "te", "mr", "gu", "bn", "ml", "pa","ta","en"];
 
 function shouldUseSarvam(languageCode) {
   if (!languageCode) return false;
@@ -525,7 +525,7 @@ class ElevenLabsTTS {
         console.error("Body:", rawBody);
         throw new Error(`ElevenLabs API error ${response.status}: ${rawBody}`);
       }
-      console.time("TTS_FIRST_BYTE");
+
       const reader = response.body.getReader();
       let totalBytes = 0;
 
@@ -804,7 +804,7 @@ async function aiResponse(messages, model, temperature, maxTokens, onPartial) {
       partial += clean;
 
       // 🚀 SPEAK EARLY
-      if (!sent && partial.length > 5 && onPartial) {
+      if (!sent && partial.length > 20 && onPartial) {
         sent = true;
         onPartial(partial);
       }
@@ -837,68 +837,22 @@ async function embedText(text) {
   }
 }
 
-// async function preFetchAgentKnowledge(agentId) {
-//   try {
-//     const queryEmbedding = await embedText("general information about products and services");
-//     if (!queryEmbedding) return [];
-// console.log("Agent ID:", agentId);
-//     const results = await index.query({
-//       vector: queryEmbedding,
-//       topK: 50,
-//       includeMetadata: true,
-//       filter: { agent_id: agentId },
-//     });
-// console.log("Pinecone matches:", results.matches.length);
-//     return results.matches.map(match => ({
-//       content: match.metadata.content,
-//       _lc: (match.metadata.content || "").toLowerCase(),
-//     }));
-//   } catch (error) {
-//     console.error('Error pre-fetching knowledge:', error.message);
-//     return [];
-//   }
-// }
-
 async function preFetchAgentKnowledge(agentId) {
   try {
     const queryEmbedding = await embedText("general information about products and services");
     if (!queryEmbedding) return [];
 
-    // ✅ GET KB IDs
-    const kbResult = await db.query(
-      `SELECT knowledge_base_id 
-       FROM agent_knowledge_map 
-       WHERE agent_id = $1`,
-      [agentId]
-    );
-
-    const kbIds = kbResult.rows.map(r => r.knowledge_base_id);
-
-    console.log("Agent ID:", agentId);
-    console.log("KB IDs:", kbIds);
-
-    if (kbIds.length === 0) {
-      console.log("⚠️ No KB linked to agent");
-      return [];
-    }
-
-    // ✅ QUERY PINECONE
     const results = await index.query({
       vector: queryEmbedding,
       topK: 50,
       includeMetadata: true,
-      filter: {
-        knowledge_base_id: { $in: kbIds }
-      }
+      filter: { agent_id: agentId },
     });
-
-    console.log("Pinecone matches:", results.matches.length);
 
     return results.matches.map(match => ({
       content: match.metadata.content,
       _lc: (match.metadata.content || "").toLowerCase(),
     }));
-
   } catch (error) {
     console.error('Error pre-fetching knowledge:', error.message);
     return [];
@@ -1366,8 +1320,8 @@ state.botSpeaking = true;
 state.ttsAbortController = new AbortController();
 
   try {
-    // sendClearEvent(twilioWs, state.streamSid);
-    // await new Promise(r => setTimeout(r, 10));
+    sendClearEvent(twilioWs, state.streamSid);
+    await new Promise(r => setTimeout(r, 10));
 
   await ttsManager.generateAndStream(
   text,
@@ -1404,9 +1358,9 @@ async function processTurn(userText, state, twilioWs, callSettings, sessions, st
     return;
   }
 
-  // if (state.botSpeaking) {
-  //   await new Promise(r => setTimeout(r, 10));
-  // }
+  if (state.botSpeaking) {
+    await new Promise(r => setTimeout(r, 10));
+  }
 
   const cleaned = userText.trim();
   const words = cleaned.split(/\s+/).filter(Boolean);
@@ -1879,22 +1833,30 @@ The user wants to speak to a human agent. Before transferring, try to resolve th
 //   }
 // );
 
-let fullReply = "";
+let hasSpoken = false;
 
-fullReply = await aiResponse(
+botReply = await aiResponse(
   messages,
   settings.aiModel || "gpt-4o-mini",
-  settings.temperature ?? 0.3,
-  60
-);
+  settings.temperature ?? 0.7,
+  60,
+  (partial) => {
+    if (hasSpoken || state.interrupted) return;
 
-// 🔥 NOW SPEAK FULL RESPONSE
-await speakText(fullReply, state, twilioWs, {
-  transcriberLanguage: state.transcriberLanguage,
-  languageCode: state.transcriberLanguage,
-  sarvamVoice: state.sarvamVoice,
-  elevenLabsVoiceId: settings.elevenLabsVoiceId,
-});
+    if (partial.length < 25) return; // wait meaningful chunk
+
+    hasSpoken = true;
+
+    console.log("⚡ EARLY SPEAK:", partial);
+
+    speakText(partial, state, twilioWs, {
+      transcriberLanguage: state.transcriberLanguage, // 🔥 IMPORTANT FIX
+      languageCode: state.transcriberLanguage,
+      sarvamVoice: state.sarvamVoice,
+      elevenLabsVoiceId: settings.elevenLabsVoiceId,
+    }).catch(console.error);
+  }
+);
         botReply = (botReply || "").trim();
         if (!botReply || botReply.length < 5) {
           botReply = "I understand you'd like to speak with someone. Let me first see if I can help you directly — what seems to be the issue?";
@@ -1904,17 +1866,17 @@ await speakText(fullReply, state, twilioWs, {
         botReply = "I understand you'd like to speak with someone. Let me first see if I can help you directly — what seems to be the issue?";
       }
 
-      //   speakText(botReply, state, twilioWs, {
-      //   transcriberLanguage: state.transcriberLanguage,
-      //   languageCode: state.transcriberLanguage,
-      //   sarvamVoice: state.sarvamVoice,
-      //   voice: state.sarvamVoice,
-      //   elevenLabsVoiceId: settings.elevenLabsVoiceId,
-      //   elevenLabsSpeed: settings.elevenLabsSpeed,
-      //   elevenLabsStability: settings.elevenLabsStability,
-      //   elevenLabsSimilarityBoost: settings.elevenLabsSimilarityBoost,
-      //   pace: 1.15
-      // });
+      await speakText(botReply, state, twilioWs, {
+        transcriberLanguage: state.transcriberLanguage,
+        languageCode: state.transcriberLanguage,
+        sarvamVoice: state.sarvamVoice,
+        voice: state.sarvamVoice,
+        elevenLabsVoiceId: settings.elevenLabsVoiceId,
+        elevenLabsSpeed: settings.elevenLabsSpeed,
+        elevenLabsStability: settings.elevenLabsStability,
+        elevenLabsSimilarityBoost: settings.elevenLabsSimilarityBoost,
+        pace: 1.15
+      });
 
       // Save to conversation history
       if (!state.interrupted) {

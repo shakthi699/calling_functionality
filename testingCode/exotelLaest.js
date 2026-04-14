@@ -24,12 +24,12 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 const CONFIG = {
 // Latency optimization
 INTERRUPT_THRESHOLD_MS: 100, // Faster interruption detection
-SILENCE_INTERVAL_MS: 100, // Reduced from 250ms
+SILENCE_INTERVAL_MS: 200, // Reduced from 250ms
 TTS_CHUNK_SIZE: 3200,
 MAX_AUDIO_QUEUE: 3, // Reduced queue size
     
 // Deepgram optimization
-DEEPGRAM_ENDPOINTING: 20, // Faster speech finalization
+DEEPGRAM_ENDPOINTING: 100, // Faster speech finalization
 DEEPGRAM_INTERIM_RESULTS: true,
     
 // ElevenLabs optimization
@@ -38,9 +38,9 @@ ELEVENLABS_CHUNK_SCHEDULE: [40, 50, 60, 70], // Aggressive chunking
 ELEVENLABS_TIMEOUT_MS: 8000,
     
 // OpenAI optimization
-OPENAI_STREAMING_WORD_THRESHOLD: 1, // Start TTS after ~4 words
+OPENAI_STREAMING_WORD_THRESHOLD: 4, // Start TTS after ~4 words
 OPENAI_MAX_TOKENS_INTERRUPT: 15,
-OPENAI_MAX_TOKENS_NORMAL: 25, // Reduced from 60
+OPENAI_MAX_TOKENS_NORMAL: 50, // Reduced from 60
     
 // Call management
 CALL_SETTINGS_CLEANUP_MS: 5 * 60 * 1000,
@@ -170,98 +170,6 @@ const PORT = process.env.PORT || 8080;
 
     const stateManager = new StateManager();
 
-
-
-    const API_BASE_URL = 'https://callagent.zoptrix.com/api';
-
-     function createEnhancedSystemPrompt(baseSystemPrompt, calendarConfig) {
-    const currentTime = new Date().toISOString();
-    const agentTimezone = calendarConfig?.effective_timezone || 'UTC';
-    
-    return `${baseSystemPrompt}
-
-    Current UTC time: ${currentTime}
-    Agent timezone: ${agentTimezone}
-
-    Keep responses extremely concise (1-2 sentences). Speak naturally like a human in conversation.
-    `;
-    }
-
-    
-    const getAgentCalendarConfig = async (agentId) => {
-    try {
-        const response = await fetch(`${API_BASE_URL}/${agentId}/calendar-config`, {
-        method: 'GET',
-        headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-        }
-        });
-
-        if (!response.ok) return null;
-
-        const data = await response.json();
-        if (data?.agent_id) {
-        return {
-            agent_id: data.agent_id,
-            agent_name: data.name,
-            calendar_provider: data.provider,
-            calendar_access_token: data.access_token,
-            effective_timezone: data.calendar_timezone || data.agent_timezone || 'UTC',
-            user_id: data.user_id,
-        };
-        }
-
-        return null;
-    } catch (error) {
-        console.error("Calendar config error:", error);
-        return null;
-    }
-    };
-
-    
-    async function embedText(text) {
-    const cacheKey = text.toLowerCase().trim();
-    if (stateManager.embeddingCache.has(cacheKey)) {
-        return stateManager.embeddingCache.get(cacheKey);
-    }
-    
-    const embed = await openai.embeddings.create({
-        model: "text-embedding-3-small",
-        input: text,
-    });
-    
-    const result = embed.data[0].embedding;
-    stateManager.embeddingCache.set(cacheKey, result);
-    return result;
-    }
-
-    async function preFetchAgentKnowledge(agentId) {
-    try {
-        const queryEmbedding = await embedText(
-        "company information general query"
-        );
-
-        const results = await index.query({
-        vector: queryEmbedding,
-        topK: 3, // Reduced from 5
-        includeMetadata: true,
-        filter: { agent_id: agentId },
-        });
-
-        console.log(`🧠 KB fetched: ${results.matches.length} chunks`);
-
-        return results.matches.map(match => ({
-        content: match.metadata.content,
-        embedding: match.values
-        }));
-    } catch (error) {
-        console.error("❌ KB prefetch error:", error);
-        return [];
-    }
-    }
-
-
     async function loadWorkflowByAgent(agentId) {
   const result = await db.query(
     `SELECT * FROM workflows WHERE agent_id = $1 AND is_active = true`,
@@ -272,21 +180,15 @@ const PORT = process.env.PORT || 8080;
 
   const workflowId = result.rows[0].id;
 
-  // const nodes = await db.query(
-  //   `SELECT * FROM workflow_nodes WHERE workflow_id = $1`,
-  //   [workflowId]
-  // );
+  const nodes = await db.query(
+    `SELECT * FROM workflow_nodes WHERE workflow_id = $1`,
+    [workflowId]
+  );
 
-  // const edges = await db.query(
-  //   `SELECT * FROM workflow_edges WHERE workflow_id = $1`,
-  //   [workflowId]
-  // );
-
-    // AFTER: parallel — both fire at the same time
-  const [nodes, edges] = await Promise.all([
-    db.query(`SELECT * FROM workflow_nodes WHERE workflow_id = $1`, [workflowId]),
-    db.query(`SELECT * FROM workflow_edges WHERE workflow_id = $1`, [workflowId]),
-  ]);
+  const edges = await db.query(
+    `SELECT * FROM workflow_edges WHERE workflow_id = $1`,
+    [workflowId]
+  );
 
   return {
     id: workflowId,
@@ -295,115 +197,6 @@ const PORT = process.env.PORT || 8080;
   };
 }
 
-async function loadInboundSettingsByPhone(exotelNumber) {
-  const result = await db.query(`
-    SELECT ic.*, a.*
-    FROM inbound_configs ic
-    JOIN agents a ON a.id = ic.agent_id::uuid
-    WHERE ic.phone_number = $1
-  `, [exotelNumber]);
-
-  if (!result.rows.length) return null;
-
-  const row = result.rows[0];
-
-  // const [calendarConfig, knowledgeChunks] = await Promise.all([
-  //   getAgentCalendarConfig(row.agent_id),
-  //   preFetchAgentKnowledge(row.agent_id),
-  // ]);
-
-  const [calendarConfig, knowledgeChunks, workflow] = await Promise.all([
-  getAgentCalendarConfig(row.agent_id),
-  preFetchAgentKnowledge(row.agent_id),
-  loadWorkflowByAgent(row.agent_id),
-]);
-
-  // ✅ SAFE extraction (no assumptions)
-  const agentPrompt =
-    row.conversation_config?.agent?.prompt?.prompt ||
-    "You are a helpful AI assistant.";
-
-  const firstMessage =
-    row.conversation_config?.agent?.first_message ||
-    row.greeting_message ||
-    "Hello! How can I help you today?";
-
-// Extract from conversation_config (SINGLE SOURCE OF TRUTH)
-const agentLanguage =
-  row.conversation_config?.agent?.language ||
-  row.conversation_config?.asr?.language ||
-  "kn";
-
-const agentVoice =
-  row.conversation_config?.tts?.voice_id ||
-  "karun";
-console.log("🟢 ===== INBOUND SETTINGS DEBUG =====");
-console.log("Phone:", exotelNumber);
-console.log("Agent ID:", row.agent_id);
-console.log("Voice from conversation_config:", agentVoice);
-console.log("Language from conversation_config:", agentLanguage);
-console.log("ASR Model:", row.conversation_config?.asr?.model);
-console.log("=====================================");
-// const workflow = await loadWorkflowByAgent(row.agent_id);
-
-console.log("📊 Loaded workflow:", workflow?.id || "none");
-return {
-  agentId: row.agent_id,
-  agentName: row.name,
-  aiModel: "gpt-4o-mini",
-  temperature: 0.7,
-  maxTokens: 180,
-  systemPrompt: createEnhancedSystemPrompt(agentPrompt, calendarConfig),
-  agentPrompt,
-  firstMessage,
-  calendarConfig,
-  knowledgeChunks,
-  elevenLabsVoiceId: agentVoice, 
-  sarvamVoice: agentVoice,
-  sarvamLanguage: agentLanguage,
-  transcriberLanguage: agentLanguage,
-  transcriberModel: row.conversation_config?.asr?.model || "nova-3",
-  callType: "inbound",
-  provider: "exotel",
-  workflow,
-  createdAt: Date.now(),
-  lastAccessed: Date.now(),
-   customerPhone: null, // Will be populated from WebSocket start event
-  exotelAccountSid: process.env.EXOTEL_SID,
-  exotelApiKey: process.env.EXOTEL_API_KEY,
-  exotelApiToken: process.env.EXOTEL_API_TOKEN,
-  exotelPhoneNumber: process.env.EXOTEL_PHONE_NUMBER,
-};
-}
-
-
-
-export const inboundSettingsCache = new Map();
-
-export async function preloadInboundSettings() {
-  try {
-    const result = await db.query(`
-      SELECT ic.phone_number
-      FROM inbound_configs ic
-      JOIN agents a ON a.id = ic.agent_id::uuid
-    `);
-    console.log(`🔄 Preloading ${result.rows.length} inbound configs...`);
-    await Promise.all(
-      result.rows.map(async (row) => {
-        const settings = await loadInboundSettingsByPhone(row.phone_number);
-        if (settings) {
-          inboundSettingsCache.set(row.phone_number, settings);
-          console.log(`✅ Cached inbound: ${row.phone_number}`);
-        }
-      })
-    );
-    console.log(`✅ Preloaded ${inboundSettingsCache.size} inbound configs`);
-  } catch (err) {
-    console.error("❌ preloadInboundSettings error:", err.message);
-  }
-}
-
-setInterval(preloadInboundSettings, 5 * 60 * 1000);
 
 async function decideNextNode(userText, nodes) {
 
@@ -638,147 +431,84 @@ class OptimizedSarvamTTS {
     constructor(apiKey) {
         this.client = new SarvamAIClient({ apiSubscriptionKey: apiKey });
         this.model = "bulbul:v2";
+        this.activeConnections = new Map();
     }
 
     async generateAndStream(text, options = {}, exotelWs, state) {
-        return new Promise(async (resolve) => {
-            let resolved = false;
-            const safeResolve = () => {
-                if (!resolved) {
-                    resolved = true;
-                    resolve();
-                }
-            };
-
-            let socket;
-            try {
-                socket = await this.client.textToSpeechStreaming.connect({
-                    model: this.model,
-                    send_completion_event: true,
-                });
-                await socket.waitForOpen();
-            } catch (err) {
-                console.error("[Sarvam TTS] Connection error:", err.message);
-                safeResolve();
-                return;
-            }
-
-            const voice = (options.voice || "Arya").toLowerCase();
-            const pitch = options.pitch ?? 0.0;
-            const pace = options.pace ?? 1.0;
-            const languageCode = options.languageCode || "kn-IN";
-
-            const configMessage = {
-                type: "config",
-                data: {
-                    target_language_code: languageCode,
-                    speaker: voice,
-                    pitch,
-                    pace,
-                    output_audio_codec: "mp3",
-                    speech_sample_rate: 16000,
-                    min_buffer_size: 30,
-                    max_chunk_length: 50
-                }
-            };
-
-            if (socket.socket && typeof socket.socket.send === 'function') {
-                socket.socket.send(JSON.stringify(configMessage));
-                console.log(`✅ Sarvam Config: lang=${languageCode}, voice=${voice}, pace=${pace}`);
-            } else {
-                console.error("[Sarvam TTS] Cannot access socket.socket");
-                safeResolve();
-                return;
-            }
-
-            // Queue of PCM send promises — we drain these before resolving
-            const audioSendQueue = [];
-            let finalEventReceived = false;
-            let socketClosed = false;
-
-            const tryResolve = () => {
-                if ((finalEventReceived || socketClosed) && audioSendQueue.length === 0) {
-                    console.log("[Sarvam] All audio sent — resolving");
-                    safeResolve();
-                }
-            };
-
-            // Safety timeout
-            const safetyTimeout = setTimeout(() => {
-                console.warn("[Sarvam TTS] Safety timeout");
-                try { socket.socket?.close(); } catch {}
-                safeResolve();
-            }, 30000);
-
-            // Interrupt poller
-            const interruptPoller = setInterval(() => {
-                if (state.interrupted) {
-                    console.log("[Sarvam TTS] Interrupt — closing socket");
-                    clearInterval(interruptPoller);
-                    clearTimeout(safetyTimeout);
-                    try { socket.socket?.close(); } catch {}
-                    safeResolve();
-                }
-            }, 50);
-
-            socket.on("message", async (msg) => {
-                if (msg.type === "audio" && msg.data?.audio) {
-                    // Even if interrupted, we received this chunk — just don't send it
-                    const audioData = msg.data.audio;
-
-                    // Create a promise for this chunk and track it
-                    const sendPromise = (async () => {
-                        try {
-                            const pcm = await mp3Base64ToPcm(audioData);
-                            console.log(`🔊 Sending PCM16 audio: ${pcm.length} bytes`);
-
-                            if (!state.interrupted && exotelWs.readyState === WebSocket.OPEN) {
-                                exotelWs.send(JSON.stringify({
-                                    event: "media",
-                                    stream_sid: state.streamSid,
-                                    media: { payload: pcm.toString("base64") }
-                                }));
-                            }
-                        } catch (err) {
-                            console.error("[PCM Conversion Error]", err.message);
-                        } finally {
-                            // Remove this promise from the queue
-                            const idx = audioSendQueue.indexOf(sendPromise);
-                            if (idx !== -1) audioSendQueue.splice(idx, 1);
-                            tryResolve();
-                        }
-                    })();
-
-                    audioSendQueue.push(sendPromise);
-                }
-
-                if (msg.type === "event" && msg.data?.event_type === "final") {
-                    console.log(`[Sarvam] Final event received`);
-                    clearInterval(interruptPoller);
-                    clearTimeout(safetyTimeout);
-                    finalEventReceived = true;
-                    tryResolve();
-                }
-            });
-
-            socket.on("error", (err) => {
-                console.error("[Sarvam Socket Error]", err.message);
-                clearInterval(interruptPoller);
-                clearTimeout(safetyTimeout);
-                safeResolve();
-            });
-
-            socket.on("close", () => {
-                console.log(`[Sarvam] Socket closed`);
-                clearInterval(interruptPoller);
-                clearTimeout(safetyTimeout);
-                socketClosed = true;
-                tryResolve();
-            });
-
-            socket.convert(text.trim());
-            socket.flush();
+        const socket = await this.client.textToSpeechStreaming.connect({
+            model: this.model,
+            send_completion_event: true,
         });
+
+        await socket.waitForOpen();
+
+        const voice = (options.voice || "Arya").toLowerCase();
+        const pitch = options.pitch ?? 0.0;
+        const pace = options.pace ?? 1.0;
+        let languageCode = options.languageCode || "kn-IN";
+
+        const configMessage = {
+            type: "config",
+            data: {
+                target_language_code: languageCode,
+                speaker: voice,
+                pitch: pitch,
+                pace: pace,
+                output_audio_codec: "mp3",
+                speech_sample_rate: 16000,
+                min_buffer_size: 30,
+                max_chunk_length: 100
+            }
+        };
+
+        if (socket.socket && typeof socket.socket.send === 'function') {
+            socket.socket.send(JSON.stringify(configMessage));
+            console.log(`✅ Sarvam Config: lang=${languageCode}, voice=${voice}, pace=${pace}`);
+        } else {
+            console.error("[Sarvam TTS] Cannot access socket.socket");
+        }
+
+        socket.on("message", async (msg) => {
+            if (
+                msg.type === "audio" &&
+                msg.data?.audio &&
+                exotelWs.readyState === WebSocket.OPEN &&
+                !state.interrupted
+            ) {
+                try {
+                    const pcm = await mp3Base64ToPcm(msg.data.audio);
+                    console.log(`🔊 Sending PCM16 audio: ${pcm.length} bytes`);
+                    exotelWs.send(JSON.stringify({
+                        event: "media",
+                        stream_sid: state.streamSid,
+                        media: { payload: pcm.toString("base64") }
+                    }));
+                } catch (err) {
+                    console.error("[PCM Conversion Error]", err.message);
+                }
+            }
+
+            if (msg.type === "event" && msg.data?.event_type === "final") {
+                console.log(`[Sarvam] Final event received`);
+                state.sarvamSpeaking = false;
+                state.botSpeaking = false;
+            }
+        });
+
+        socket.on("error", (err) => {
+            console.error("[Sarvam Socket Error]", err.message);
+            state.sarvamSpeaking = false;
+            state.botSpeaking = false;
+        });
+
+        socket.on("close", () => {
+            console.log(`[Sarvam] Socket closed`);
+            state.sarvamSpeaking = false;
+            state.botSpeaking = false;
+        });
+
+        socket.convert(text.trim());
+        socket.flush();
     }
 }
 
@@ -844,6 +574,43 @@ function normalizeLanguageCode(languageCode) {
     }
 
 
+//     async function detectIntent(text) {
+//   try {
+//     const response = await openai.chat.completions.create({
+//       model: "gpt-4o-mini",
+//       temperature: 0,
+//       max_tokens: 10,
+//       messages: [
+//         {
+//           role: "system",
+//           content: `Classify the user's intent.
+
+// Return ONLY one word:
+
+// escalation → user wants human / support / real person
+// normal → normal conversation
+
+// Examples:
+// "I want to talk to a human" → escalation
+// "Connect me to support" → escalation
+// "I need help with billing" → normal
+// "Tell me about your service" → normal`
+//         },
+//         {
+//           role: "user",
+//           content: text
+//         }
+//       ]
+//     });
+
+//     return response.choices[0].message.content.trim().toLowerCase();
+
+//   } catch (err) {
+//     console.error("Intent detection error:", err.message);
+//     return "normal";
+//   }
+// }
+
 async function detectIntent(text) {
 
   try {
@@ -861,7 +628,6 @@ You classify the intent of a phone call message.
 Return ONLY one word:
 
 escalation
-meeting
 normal
 
 Escalation means the user wants:
@@ -885,28 +651,6 @@ Kannada:
 
 Hindi:
 "मुझे इंसान से बात करनी है" → escalation
-
-Meeting means the user wants to:
-- schedule a meeting
-- book an appointment
-- arrange a call
-- book a demo
-- schedule a discussion
-- talk later with sales
-
-Examples:
-
-English:
-"I want to schedule a meeting" → meeting
-"Book a demo" → meeting
-"Can we arrange a call?" → meeting
-
-Kannada:
-"ಮೀಟಿಂಗ್ ಶೆಡ್ಯೂಲ್ ಮಾಡಬೇಕು" → meeting
-"ಡೆಮೊ ಬುಕ್ ಮಾಡಬೇಕು" → meeting
-
-Hindi:
-"मुझे मीटिंग शेड्यूल करनी है" → meeting
 
 Everything else → normal
 `
@@ -996,6 +740,54 @@ LIMIT 1
   }
 }
 
+// async function exotelTransferCall(customerNumber, agentPhoneNumber, exotelCreds) {
+//   // Exotel "Connect Two Numbers" API
+//   // From = agent phone (called first), To = customer number
+//   // CallerId = your Exophone (virtual number)
+//   const { accountSid, apiKey, apiToken, phoneNumber: callerId } = exotelCreds;
+
+//   const authHeader = Buffer.from(`${apiKey}:${apiToken}`).toString("base64");
+
+//   const payload = querystring.stringify({
+//     From: agentPhoneNumber,   // Agent is called first
+//     To: customerNumber,       // Then bridged to customer
+//     CallerId: callerId,       // Your Exophone virtual number
+//     TimeLimit: 3600,
+//     Record: "true",
+//     // StatusCallbackEvents: "terminal",
+//     StatusCallback: `https://${DOMAIN}/exotel-call-status`,
+//     // StatusCallbackContentType: "application/json",
+//   });
+
+//   try {
+//     const response = await fetch(
+//       `https://api.exotel.com/v1/Accounts/${accountSid}/Calls/connect.json`,
+//       {
+//         method: "POST",
+//         headers: {
+//           "Authorization": `Basic ${authHeader}`,
+//           "Content-Type": "application/x-www-form-urlencoded",
+//           "Accept": "application/json",
+//         },
+//         body: payload,
+//       }
+//     );
+
+//     const data = await response.json();
+//     const newCallSid = data?.Call?.Sid || data?.Sid;
+
+//     if (!newCallSid) {
+//       console.error("❌ Exotel transfer failed:", JSON.stringify(data));
+//       return false;
+//     }
+
+//     console.log(`✅ Exotel transfer initiated → new call SID: ${newCallSid}`);
+//     return true;
+//   } catch (err) {
+//     console.error("❌ exotelTransferCall error:", err.message);
+//     return false;
+//   }
+// }
 
 async function markAgentBusy(agentId, callSid) {
   try {
@@ -1011,7 +803,19 @@ async function markAgentBusy(agentId, callSid) {
   }
 }
 
-
+// async function markAgentFree(callSid) {
+//   try {
+//     await db.query(`
+//       UPDATE routing_agents
+//       SET is_available = true,
+//           current_call_sid = null
+//       WHERE current_call_sid = $1
+//     `, [callSid]);
+//     console.log(`🟢 Agent freed for call: ${callSid}`);
+//   } catch (err) {
+//     console.error("❌ markAgentFree error:", err.message);
+//   }
+// }
 
 async function markAgentFree(callSid) {
   try {
@@ -1053,6 +857,7 @@ async function markAgentFree(callSid) {
     `,[agentId]);
 
     console.log(`🟢 Agent ${agentId} marked available`);
+
   } catch (err) {
     console.error("❌ markAgentFree error:", err.message);
   }
@@ -1064,13 +869,13 @@ async function markAgentFree(callSid) {
 
     const map = {
         kn: "kn-IN", te: "te-IN", ta: "ta-IN", ml: "ml-IN",
-        bn: "bn-IN", gu: "gu-IN", mr: "mr-IN", pa: "pa-IN",ta: "ta-IN",en: "en-IN",hi: "hi-IN"
+        bn: "bn-IN", gu: "gu-IN", mr: "mr-IN", pa: "pa-IN",en:"en-IN"
     };
 
     return map[lang] || "kn-IN";
     }
 
-    const SARVAM_LANGS = ["kn", "te", "mr", "gu", "bn", "ml", "pa","ta","en","hi"];
+    const SARVAM_LANGS = ["en","kn", "te", "mr", "gu", "bn", "ml", "pa"];
 
     function useSarvam(language) {
     const base = language?.split("-")[0];
@@ -1152,20 +957,10 @@ async function markAgentFree(callSid) {
         if (!token) continue;
 
         // Track first token latency
-       if (!firstTokenTime) {
-  firstTokenTime = Date.now() - streamStart;
-
-  console.log(`⚡ First token: ${firstTokenTime}ms`);
-
-  // ✅ ADD THIS (REAL LATENCY)
-  if (state.userEndTime) {
-    console.log(
-      "⚡ FIRST TOKEN LATENCY:",
-      Date.now() - state.userEndTime,
-      "ms"
-    );
-  }
-}
+        if (!firstTokenTime) {
+        firstTokenTime = Date.now() - streamStart;
+        console.log(`⚡ First token: ${firstTokenTime}ms`);
+        }
 
         const clean = token
         .replace(/^(\s*[-*+]|\s*\d+\.)\s+/g, "")
@@ -1184,11 +979,9 @@ async function markAgentFree(callSid) {
         const lastChar = trimmed.slice(-1);
         const isSentenceEnd = /[.!?]/.test(lastChar);
 
-        // const shouldSpeakNow =
-        //     wordCount >= CONFIG.OPENAI_STREAMING_WORD_THRESHOLD &&
-        //     (!ttsStarted || isSentenceEnd);
         const shouldSpeakNow =
-  wordCount >= 3; 
+            wordCount >= CONFIG.OPENAI_STREAMING_WORD_THRESHOLD &&
+            (!ttsStarted || isSentenceEnd);
 
         if (shouldSpeakNow) {
             ttsStarted = true;
@@ -1220,7 +1013,7 @@ async function markAgentFree(callSid) {
         : sentenceBuffer.trim();
 
     if (
-        // !state.interrupted &&
+        !state.interrupted &&
         !turnController?.aborted &&
         remainingText.length > 0
     ) {
@@ -1234,63 +1027,78 @@ async function markAgentFree(callSid) {
     // 🎯 OPTIMIZED PROCESS TURN (MAIN CONVERSATION LOGIC)
     // ============================================================================
 
-    // After getting `cleaned` text, add this:
-async function getDynamicKBContext(userText, agentId, language) {
-  try {
-    let searchText = userText;
-
-    // Translate non-English queries to English for KB search
-    if (language && language !== 'en' && !language.startsWith('en')) {
-      const translation = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        temperature: 0,
-        max_tokens: 100,
-        messages: [
-          { role: "system", content: "Translate the following text to English. Return only the translation, nothing else." },
-          { role: "user", content: userText }
-        ]
-      });
-      searchText = translation.choices[0].message.content.trim();
-      console.log(`🌍 KB search query translated: "${userText}" → "${searchText}"`);
-    }
-
-    const queryEmbedding = await embedText(searchText);
-    const results = await index.query({
-      vector: queryEmbedding,
-      topK: 3,
-      includeMetadata: true,
-      filter: { agent_id: agentId },
-    });
-
-    return results.matches.map(m => m.metadata.content).join("\n\n");
-  } catch (err) {
-    console.error("❌ Dynamic KB search error:", err.message);
-    return "";
-  }
-}
-  
-
     async function processTurn(userText, state, exotelWs) {
-    console.log("🔎 processTurn called");
-    console.log("WorkflowEngine exists:", !!state.workflowEngine);
-    console.log("Current node:", state.currentNode?.name);
+ console.log("🔎 processTurn called");
+console.log("WorkflowEngine exists:", !!state.workflowEngine);
+console.log("Current node:", state.currentNode?.name);
+        // 🔥 If workflow exists, use workflow instead of OpenAI
+// if (state.workflowEngine) {
 
+//   const engine = state.workflowEngine;
+
+//   if (!state.currentNode) return;
+
+//   console.log("➡️ Current node:", state.currentNode.name);
+
+//   let nextNode = null;
+
+//   // 🔥 If current is conversation, first move via direct edge
+//   if (state.currentNode.type === "conversation") {
+
+//     const directEdge = engine.edges.find(
+//       e =>
+//         e.from_node_id === state.currentNode.id &&
+//         e.condition?.type === "direct"
+//     );
+
+//     if (directEdge) {
+//       nextNode = engine.getNodeById(directEdge.to_node_id);
+//       console.log("➡️ Moving to next node:", nextNode?.name);
+//     }
+//   }
+
+//   // 🔥 If next is decision → evaluate user text
+//   if (nextNode?.type === "decision") {
+//     nextNode = await engine.getNextNodeByAI(
+//   nextNode.id,
+//   userText,
+//   state
+// );
+//   }
+
+//   if (!nextNode) {
+//     console.log("⚠️ No next node resolved");
+//     return;
+//   }
+
+//   state.currentNode = nextNode;
+
+//   await engine.executeNode(
+//     nextNode,
+//     state,
+//     exotelWs,
+//     speakText,
+//     endCall
+//   );
+
+//   return;
+// }
     const turnStart = Date.now();
     try {
         // Hard interrupt check
-        // if (state.botSpeaking) {
-        // state.interrupted = true;
-        // state.botSpeaking = false;
-        // state.sarvamSpeaking = false;
-        // sendClearEvent(exotelWs, state.streamSid);
+        if (state.botSpeaking) {
+        state.interrupted = true;
+        state.botSpeaking = false;
+        state.sarvamSpeaking = false;
+        sendClearEvent(exotelWs, state.streamSid);
         
-        // if (state.activeTTSAbort) {
-        //     state.activeTTSAbort.abort();
-        //     state.activeTTSAbort = null;
-        // }
+        if (state.activeTTSAbort) {
+            state.activeTTSAbort.abort();
+            state.activeTTSAbort = null;
+        }
         
-        // stateManager.metrics.interruptions++;
-        // }
+        stateManager.metrics.interruptions++;
+        }
 
         const callSid = streamToCallMap.get(state.streamSid) || state.callSid;
         if (!callSid) return;
@@ -1298,38 +1106,11 @@ async function getDynamicKBContext(userText, agentId, language) {
         const settings = await getCallSettings(state.streamSid, callSid);
         if (!settings) return;
 
-        const userEndTime = Date.now();
-state.userEndTime = userEndTime; // ✅ ADD THIS
-console.log("🕒 USER END:", userEndTime);
-
         const cleaned = userText?.trim();
-     if (
-  cleaned &&
-  cleaned.length > 2 &&
-  (state.botSpeaking || state.sarvamSpeaking) &&  // ⭐ KEY FIX
-  !state.interrupted
-) {
-  console.log(`🛑 INTERRUPT TRIGGERED: "${cleaned}"`);
-
-  state.interrupted = true;
-  state.botSpeaking = false;
-  state.sarvamSpeaking = false;
-
-  sendClearEvent(exotelWs, state.streamSid);
-
-  if (state.activeTTSAbort) {
-    try {
-      state.activeTTSAbort.abort();
-    } catch {}
-    state.activeTTSAbort = null;
-  }
-
-  stateManager.metrics.interruptions++;
-}
         if (state.callEnding) return;
         if (!cleaned) return;
-        // const intent = await detectIntent(cleaned);
-      const intent = await detectIntent(cleaned);
+        const intent = await detectIntent(cleaned);
+
 if (intent === "escalation" && !state.awaitingEscalationEmail) {
 
   console.log(`🚨 Escalation intent (attempt ${state.escalationAttempts + 1})`);
@@ -1346,16 +1127,7 @@ if (intent === "escalation" && !state.awaitingEscalationEmail) {
     console.log("🤖 First escalation → AI trying to help first");
 
     let conversation = sessions.get(callSid) || [];
-    // const kbContext = settings.knowledgeChunks?.slice(0, 2)?.map(c => c.content)?.join("\n\n") || "";
-//     const kbContext =  getDynamicKBContext(
-//   cleaned,
-//   settings.agentId,
-//   settings.transcriberLanguage
-// );
-const kbContext = settings.knowledgeChunks
-  ?.slice(0, 2)
-  ?.map(c => c.content)
-  ?.join("\n\n") || "";
+    const kbContext = settings.knowledgeChunks?.slice(0, 2)?.map(c => c.content)?.join("\n\n") || "";
     const systemPrompt = `${settings.systemPrompt || ""}
 ${kbContext ? `KNOWLEDGE:\n${kbContext}\n` : ""}
 The user wants to speak to a human agent. Before transferring, try to resolve their issue yourself.
@@ -1439,7 +1211,21 @@ setTimeout(() => {
       phoneNumber: settings.exotelPhoneNumber,
     };
 
-   
+    // const transferred = await exotelTransferCall(
+    //   customerPhone,
+    //   agent.phone_number,
+    //   exotelCreds
+    // );
+
+    // if (!transferred) {
+    //   console.log("⚠️ Transfer failed → fallback to email");
+    //   state.awaitingEscalationEmail = true;
+    //   await speakText(
+    //     "I'm sorry, I couldn't connect you right now. Could you provide your email and we'll call you back?",
+    //     state, exotelWs, ttsOpts
+    //   );
+    //   return;
+    // }
 
     // Mark agent busy in DB
     await markAgentBusy(agent.id, callSid);
@@ -1452,6 +1238,19 @@ setTimeout(() => {
     `, [callSid, agent.id, agent.phone_number, null])
     .catch(err => console.error("❌ routing log error:", err.message));
 
+    // Stop AI — Exotel's new call handles the bridge
+    // console.log("✅ Transfer initiated — AI shutting down");
+    // state.callEnding = true;
+    // state.botSpeaking = false;
+    // state.interrupted = true;
+    // state.workflowEngine = null;
+    // state.currentNode = null;
+
+    // setTimeout(() => {
+    //   try {
+    //     if (exotelWs.readyState === WebSocket.OPEN) exotelWs.close();
+    //   } catch (e) {}
+    // }, 2000);
 
   } else {
     // No agent available → collect email
@@ -1465,251 +1264,7 @@ setTimeout(() => {
 
   return;
 }
-  
-if (intent === "meeting" && !state.awaitingMeetingEmail && !state.meetingEmail) {
-
-  console.log("📅 Meeting intent detected");
-
-  state.awaitingMeetingEmail = true;
-
-  const language = settings.transcriberLanguage || "en";
-  const isSarvamLang = useSarvam(language);
-
-  await speakText(
-    "Sure. Could you please tell me your email address to schedule the meeting?",
-    state,
-    exotelWs,
-    isSarvamLang
-      ? { language, voice: settings.sarvamVoice, aggressive: true }
-      : { language, voiceId: settings.elevenLabsVoiceId, aggressive: true }
-  );
-  return;
-}
-
-if (state.awaitingMeetingEmail) {
-
-
-let emailInput = cleaned;
-try {
-  const translation = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    temperature: 0,
-    max_tokens: 50,
-    messages: [
-      {
-        role: "system",
-       content: `Translate the following text to English. 
-If it contains an email address spoken aloud (e.g. in any language), 
-convert it to a proper email format like "name@domain.com".
-Words like "at", "ಎಟ್", "@", "ஆட்", "ऐट" mean @.
-Words like "dot", "ಡಾಟ್", ".", "டாட்", "डॉಟ" mean .
-Return ONLY the translated/converted text, nothing else.`
-      },
-      {
-        role: "user",
-        content: cleaned
-      }
-    ]
-  });
-
-  emailInput = translation.choices[0].message.content.trim();
-
-  console.log("📧 Email parsed:", emailInput);
-
-} catch (err) {
-  console.error("Email parse error:", err.message);
-}
-
-const normalized = emailInput.toLowerCase().replace(/\s+/g, "");
-
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-
-  if (emailRegex.test(normalized)) {
-
-    state.meetingEmail = normalized;
-    state.awaitingMeetingEmail = false;
-    state.awaitingMeetingPhone = true;
-
-    const language = settings.transcriberLanguage || "en";
-    const isSarvamLang = useSarvam(language);
-
-    await speakText(
-      "Thank you. Could you also tell me your phone number?",
-      state,
-      exotelWs,
-      isSarvamLang
-        ? { language, voice: settings.sarvamVoice, aggressive: true }
-        : { language, voiceId: settings.elevenLabsVoiceId, aggressive: true }
-    );
-
-  } else {
-
-   const language = settings.transcriberLanguage || "en";
-const isSarvamLang = useSarvam(language);
-
-await speakText(
-  "I couldn't detect a valid email address. Please repeat your email.",
-  state,
-  exotelWs,
-  isSarvamLang
-    ? { language, voice: settings.sarvamVoice, aggressive: true }
-    : { language, voiceId: settings.elevenLabsVoiceId, aggressive: true }
-);
-  }
-  return;
-}
-
-
-if (state.awaitingMeetingPhone) {
-
-  let phoneInput = cleaned;
-
-  try {
-    const translation = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      temperature: 0,
-      max_tokens: 20,
-      messages: [
-        {
-          role: "system",
-          content: `You are converting a spoken Indian phone number to digits.
-
-The input may mix Kannada words, Kannada numerals (೦-೯), Hindi words, or English.
-
-DIGIT MAPPINGS:
-- ಸೊನ್ನೆ/zero/ಶೂನ್ಯ = 0
-- ಒಂದು/one/ek = 1
-- ಎರಡು/two/do = 2
-- ಮೂರು/three/teen = 3
-- ನಾಲ್ಕು/four/char = 4
-- ಐದು/five/paanch = 5
-- ಆರು/six/chhe = 6
-- ಏಳು/seven/saat/ಸೆವೆನ್ = 7
-- ಎಂಟು/eight/aath/ಐಟ್/ಎಟ್ = 8
-- ಒಂಬತ್ತು/nine/nau/ನೈನ್/ನ್ಯಾಯ = 9
-
-KANNADA NUMERALS: ೦=0 ೧=1 ೨=2 ೩=3 ೪=4 ೫=5 ೬=6 ೭=7 ೮=8 ೯=9
-
-PATTERNS:
-- "double X" or "ಡಬಲ್ X" = XX
-- "triple X" or "ತ್ರಿಪಲ್/ಟ್ರಿಬಲ್ X" = XXX
-
-Return ONLY digits. No spaces, no dashes, nothing else.`
-        },
-        { role: "user", content: cleaned }
-      ]
-    });
-
-    phoneInput = translation.choices[0].message.content.trim();
-    console.log(`📱 Phone parsed: "${cleaned}" → "${phoneInput}"`);
-
-  } catch (err) {
-    console.error("Phone parse error:", err.message);
-  }
-
-  const phone = phoneInput.replace(/\D/g, "");
-
-  // ✅ KEY CHANGE: accumulate digits across partial transcripts
-  state.phoneBuffer = (state.phoneBuffer || "") + phone;
-  
-  // Remove duplicates that can occur from Deepgram re-sending
-  // e.g. "7899" then "78999999" — take the longer one
-  if (phone.length > (state.phoneBuffer?.length || 0)) {
-    state.phoneBuffer = phone;
-  }
-
-  console.log(`📱 Phone buffer: "${state.phoneBuffer}" (${state.phoneBuffer.length} digits)`);
-
-  if (state.phoneBuffer.length >= 10) {
-    const callSid = streamToCallMap.get(state.streamSid);
-    const finalPhone = state.phoneBuffer.slice(0, 10); // take first 10
-    state.meetingPhone = finalPhone;
-    state.awaitingMeetingPhone = false;
-    state.phoneBuffer = null; // reset
-
-    console.log("📅 Meeting details:", {
-      email: state.meetingEmail,
-      phone: state.meetingPhone
-    });
-
-    try {
-       db.query(
-      `INSERT INTO meeting_requests (call_sid, email, phone)
-       VALUES ($1, $2, $3)`,
-      [callSid, state.meetingEmail, state.meetingPhone]
-    );
-
-    console.log("💾 Meeting saved:", {
-      email: state.meetingEmail,
-      phone: state.meetingPhone
-    });
-
-  } catch (err) {
-    console.error("❌ DB insert error:", err.message);
-  }
-
-    const language = settings.transcriberLanguage || "en";
-    const isSarvamLang = useSarvam(language);
-
-    // ✅ Read back the number for confirmation
-    const readableNumber = finalPhone.split("").join(" ");
-
-    await speakText(
-      `Thank you. I've noted your number as ${readableNumber}. Our team will contact you soon. Is there anything else I can help you with?`,
-      state,
-      exotelWs,
-      isSarvamLang
-        ? { language, voice: settings.sarvamVoice, aggressive: true }
-        : { language, voiceId: settings.elevenLabsVoiceId, aggressive: true }
-    );
-
-    state.meetingEmail = null;
-    state.meetingPhone = null;
-
-  } else if (state.phoneBuffer.length > 0 && state.phoneBuffer.length < 10) {
-    
-    // ✅ We got SOME digits but not enough — wait silently
-    // Don't re-prompt yet, Deepgram may still be sending more finals
-    console.log(`⏳ Only ${state.phoneBuffer.length} digits so far, waiting for more...`);
-    
-    // But if they've tried 3+ times with incomplete number, re-prompt
-    state.phoneAttempts = (state.phoneAttempts || 0) + 1;
-    
-    if (state.phoneAttempts >= 3) {
-      state.phoneBuffer = null;
-      state.phoneAttempts = 0;
-      
-      const language = settings.transcriberLanguage || "en";
-      const isSarvamLang = useSarvam(language);
-
-      await speakText(
-        "I'm having trouble getting your full number. Could you say all 10 digits slowly, one by one?",
-        state,
-        exotelWs,
-        isSarvamLang
-          ? { language, voice: settings.sarvamVoice, aggressive: true }
-          : { language, voiceId: settings.elevenLabsVoiceId, aggressive: true }
-      );
-    }
-
-  } else {
-
-    const language = settings.transcriberLanguage || "en";
-    const isSarvamLang = useSarvam(language);
-
-    await speakText(
-      "I couldn't detect a valid phone number. Please say your 10 digit number slowly.",
-      state,
-      exotelWs,
-      isSarvamLang
-        ? { language, voice: settings.sarvamVoice, aggressive: true }
-        : { language, voiceId: settings.elevenLabsVoiceId, aggressive: true }
-    );
-  }
-  return;
-}
-
-
+     
 
 if (state.awaitingEscalationEmail && !state.awaitingEmailConfirmation) {
 
@@ -1798,8 +1353,6 @@ await speakText(
 
   return;
 }
-
-
 
 // if (state.awaitingEmailConfirmation) {
 
@@ -1946,6 +1499,123 @@ if (state.workflowEngine) {
   return;
 }
 
+// if (state.awaitingEscalationEmail && !state.awaitingEmailConfirmation) {
+
+//   const normalized = cleaned
+//     .toLowerCase()
+//     .replace(/\s+at\s+/g, "@")
+//     .replace(/\s+dot\s+/g, ".")
+//     .replace(/\s+/g, "");
+
+//   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+//   if (emailRegex.test(normalized)) {
+
+//     state.pendingEmail = normalized;
+//     state.awaitingEmailConfirmation = true;
+
+//     const language = settings.transcriberLanguage || "en";
+//     const isSarvamLang = useSarvam(language);
+
+//     await speakText(
+//       `Just to confirm, your email is ${normalized}. Is that correct?`,
+//       state,
+//       exotelWs,
+//       isSarvamLang
+//         ? {
+//             language,
+//             voice: settings.sarvamVoice,
+//             aggressive: true
+//           }
+//         : {
+//             language,
+//             voiceId: settings.elevenLabsVoiceId,
+//             aggressive: true
+//           }
+//     );
+
+//   } else {
+
+//     await speakText(
+//       "I couldn't detect a valid email address. Could you please repeat your email?",
+//       state,
+//       exotelWs,
+//       { aggressive: true }
+//     );
+
+//   }
+
+//   return;
+// }
+
+// if (state.awaitingEmailConfirmation) {
+
+//   const text = cleaned.toLowerCase();
+
+//   if (text.includes("yes") || text.includes("correct")) {
+
+//     const callSid = streamToCallMap.get(state.streamSid);
+
+//     await db.query(
+//       `UPDATE campaign_logs
+//        SET escalation_status = TRUE,
+//            escalation_email = $1
+//        WHERE call_id = $2`,
+//       [state.pendingEmail, callSid]
+//     );
+
+//     const language = settings.transcriberLanguage || "en";
+//     const isSarvamLang = useSarvam(language);
+
+//     await speakText(
+//       "Thank you. Our support team will contact you shortly.",
+//       state,
+//       exotelWs,
+//       isSarvamLang
+//         ? {
+//             language,
+//             voice: settings.sarvamVoice,
+//             aggressive: true
+//           }
+//         : {
+//             language,
+//             voiceId: settings.elevenLabsVoiceId,
+//             aggressive: true
+//           }
+//     );
+
+//     state.awaitingEscalationEmail = false;
+//     state.awaitingEmailConfirmation = false;
+//     state.pendingEmail = null;
+//   }
+
+//   else if (text.includes("no") || text.includes("wrong")) {
+
+//       const language = settings.transcriberLanguage || "en";
+//     const isSarvamLang = useSarvam(language);
+//     await speakText(
+//       "I'm sorry about that. Could you please tell me your email address again?",
+//       state,
+//       exotelWs,
+//       isSarvamLang
+//         ? {
+//             language,
+//             voice: settings.sarvamVoice,
+//             aggressive: true
+//           }
+//         : {
+//             language,
+//             voiceId: settings.elevenLabsVoiceId,
+//             aggressive: true
+//           }
+//     );
+    
+//     state.awaitingEmailConfirmation = false;
+//     state.pendingEmail = null;
+//   }
+
+//   return;
+// }
         const lowerText = userText.toLowerCase();
 
 const END_PHRASES = [
@@ -1985,7 +1655,8 @@ if (END_PHRASES.some(p => lowerText.includes(p))) {
         let conversation = sessions.get(callSid) || [];
         conversation.push({ role: "user", content: cleaned });
 
-         const kbContext = settings.knowledgeChunks
+        // Build optimized KB context
+        const kbContext = settings.knowledgeChunks
         ?.slice(0, 3) // Reduced from 4
         ?.map(c => c.content)
         ?.join("\n\n") || "";
@@ -1999,9 +1670,7 @@ if (END_PHRASES.some(p => lowerText.includes(p))) {
     ${settings?.agentId ? `Agent: ${settings.agentName || settings.agentId}\n` : ""}
         ${kbContext ? `Knowledge:\n${kbContext}\n` : ""}
         Guidelines:
-              - Respond in ONLY 1 short sentence (max 12 words)
-              - Speak fast and to the point
-              - Avoid explanations unless asked
+        - Be extremely concise (1-2 sentences max)
         - Speak naturally like a human in a phone call
         - Use the caller's previous messages to stay on topic
         - Do not repeat the same question unless the caller was unclear
@@ -2022,48 +1691,92 @@ if (END_PHRASES.some(p => lowerText.includes(p))) {
         ? CONFIG.OPENAI_MAX_TOKENS_INTERRUPT
         : CONFIG.OPENAI_MAX_TOKENS_NORMAL;
 
+        // 🚀 USE STREAMING TTS FOR INSTANT RESPONSE
+        // let reply = await aiResponseWithStreamingTTS(
+        // messages,
+        // settings.aiModel || "gpt-4o-mini",
+        // settings.temperature || 0.7,
+        // maxTokens,
+        // state,
+        // exotelWs,
+        // {
+        //     voiceId: settings.elevenLabsVoiceId,
+        //     stability: settings.elevenLabsStability || 0.7,
+        //     similarityBoost: settings.elevenLabsSimilarityBoost || 0.7,
+        //     speed: settings.elevenLabsSpeed || 1.0,
+        //     aggressive: true,
+        //     language: settings.transcriberLanguage,
+        //     voice: (settings.sarvamVoice || "arya").toLowerCase(),  // Normalize to lowercase
+        // },
+        // state.activeTurnAbort || null,
+        // state.turnSeq
+        // );
+        // const functions = createAvailableFunctions(settings.calendarConfig);
 
-        
-state.interrupted = false;
+const response = await openai.chat.completions.create({
+    model: settings.aiModel || "gpt-4o-mini",
+    temperature: settings.temperature || 0.7,
+    messages,
+    max_tokens: maxTokens,
+    // tools: functions.map(f => ({
+    //     type: "function",
+    //     function: f
+    // })),
+    // tool_choice: "auto"
+});
 
-const replyPromise = aiResponseWithStreamingTTS(
-  [
-    { role: "system", content: systemPrompt },
-    ...conversation.slice(-8)
-  ],
-  settings.aiModel || "gpt-4o-mini",
-  settings.temperature || 0.7,
-  maxTokens,
-  state,
-  exotelWs,
-  {
+const message = response.choices[0].message;
+
+if (message.tool_calls?.length > 0) {
+    const toolCall = message.tool_calls[0];
+    const functionName = toolCall.function.name;
+    const args = JSON.parse(toolCall.function.arguments);
+
+    console.log("🛠️ Function called:", functionName, args);
+
+    if (functionName === "schedule_meeting") {
+
+        // 👉 TODO: Call your real meeting API here
+        const result = { success: true }; // Replace with real API
+
+        if (result.success) {
+            await speakText(
+                "Your meeting has been scheduled successfully. Thank you. Goodbye.",
+                state,
+                exotelWs,
+                { aggressive: true }
+            );
+            console.log("✅ Meeting scheduled successfully");
+            await sleep(2000);
+            await endCall(state, exotelWs, "meeting_scheduled");
+            return;
+        }
+    }
+
+    if (functionName === "hangUp") {
+        await speakText(
+            args.message || "Thank you for your time. Goodbye.",
+            state,
+            exotelWs,
+            { aggressive: true }
+        );
+       console.log("📞 Ending call | Reason: ai_hangup");
+        await sleep(2000);
+        await endCall(state, exotelWs, "ai_hangup");
+
+        return;
+    }
+    
+}
+
+const reply = message.content || "";
+
+await speakText(reply, state, exotelWs, {
     voiceId: settings.elevenLabsVoiceId,
+    aggressive: true,
     language: settings.transcriberLanguage,
-    voice: settings.sarvamVoice,
-    aggressive: true
-  }
-);
-
-        // Build optimized KB context
-       
-
-// state.interrupted = false;
-// const reply = await aiResponseWithStreamingTTS(
-//   messages,
-//   settings.aiModel || "gpt-4o-mini",
-//   settings.temperature || 0.7,
-//   maxTokens,
-//   state,
-//   exotelWs,
-//   {
-//     voiceId: settings.elevenLabsVoiceId,
-//     language: settings.transcriberLanguage,
-//     voice: settings.sarvamVoice,
-//     aggressive: true
-//   }
-// );
-
-const reply = await replyPromise
+    voice: (settings.sarvamVoice || "arya").toLowerCase(),
+});
 
        if (reply.includes("[END_CALL]")) {
     console.log("📞 AI decided to end the call.");
@@ -2123,7 +1836,7 @@ const reply = await replyPromise
         exotelWs
     );
 } finally {
-        // state.interrupted = false;
+        state.interrupted = false;
         state.activeTTSAbort = null;
     }
     }
@@ -2131,132 +1844,131 @@ const reply = await replyPromise
     // ============================================================================
     // 🔊 OPTIMIZED SPEAK TEXT
     // ============================================================================
-    
 
-  async function speakText(text, state, exotelWs, ttsOptions = {}) {
+    async function speakText(text, state, exotelWs, ttsOptions = {}) {
     if (!exotelWs || exotelWs.readyState !== 1) return;
     if (!text || text.trim().length === 0) return;
 
+    // Queue management
     if (state.botSpeaking) {
         state.audioQueue = state.audioQueue || [];
         if (state.audioQueue.length < CONFIG.MAX_AUDIO_QUEUE) {
-            state.audioQueue.push({ text, ttsOptions });
+        state.audioQueue.push({ text, ttsOptions });
         }
         return;
     }
 
     state.botSpeaking = true;
-    state.sarvamSpeaking = true;
     state.interrupted = false;
-    state.lastSpeakStart = Date.now(); // ← track when speaking started
+    state.sarvamSpeaking = true;
+    // state.lastUserActivity = Date.now(); 
 
     const speakStart = Date.now();
-    // ✅ ADD THIS
-if (state.userEndTime) {
-  console.log(
-    "🔊 TTS START LATENCY:",
-    speakStart - state.userEndTime,
-    "ms"
-  );
-}
 
     try {
         const language = ttsOptions.language || ttsOptions.transcriberLanguage;
 
         if (useSarvam(language)) {
-            console.log(`🗣️ Sarvam TTS: "${text.substring(0, 40)}..." voice="${(ttsOptions.voice || 'arya').toLowerCase()}"`);
-
-            await sarvamTTS.generateAndStream(
-                text,
-                {
-                    voice: (ttsOptions.voice || "arya").toLowerCase(),
-                    languageCode: normalizeSarvamLang(language),
-                    pitch: ttsOptions.pitch ?? 0.0,
-                    pace: ttsOptions.pace || 1.2,
-                },
-                exotelWs,
-                state
-            );
+        console.log(`🗣️ Sarvam TTS: "${text.substring(0, 40)}..." voice="${(ttsOptions.voice || 'arya').toLowerCase()}"`);
+        
+        await sarvamTTS.generateAndStream(
+            text,
+            {
+            voice: (ttsOptions.voice || "arya").toLowerCase(),  // Normalize to lowercase
+            languageCode: normalizeSarvamLang(language),
+            pitch: ttsOptions.pitch ?? 0.0,
+            pace: ttsOptions.pace || 1.0,  // Use pace not speed, default to 1.0
+            },
+            exotelWs,
+            state
+        );
 
         } else {
-            console.log(`🗣️ ElevenLabs TTS: "${text.substring(0, 40)}..."`);
-            const abortController = new AbortController();
-            state.activeTTSAbort = abortController;
+        console.log(`🗣️ ElevenLabs TTS: "${text.substring(0, 40)}..."`);
+        const abortController = new AbortController();
+        state.activeTTSAbort = abortController;
 
-            const audio16k = await ttsManager.generateSpeech(text, {
-                voiceId: ttsOptions.voiceId,
-                outputFormat: "pcm_16000",
-                stability: ttsOptions.stability ?? 1.0,
-                similarityBoost: ttsOptions.similarityBoost ?? 0.8,
-                speed: ttsOptions.speed || 1.0,
-                aggressive: true
-            }, abortController.signal);
+        const audio16k = await ttsManager.generateSpeech(text, {
+            voiceId: ttsOptions.voiceId,
+            outputFormat: "pcm_16000",
+            stability: ttsOptions.stability ?? 1.0,
+            similarityBoost: ttsOptions.similarityBoost ?? 0.8,
+            speed: ttsOptions.speed || 1.0,
+            aggressive: true
+        }, abortController.signal);
 
-            if (state.interrupted || !state.botSpeaking) {
-                console.log("🛑 Interrupted during TTS generation");
-                return;
-            }
-
-            if (!audio16k || audio16k.length === 0) {
-                console.error("❌ Empty TTS audio");
-                return;
-            }
-
-            const pcm8k = convert16kHzPCMTo8kHz(audio16k);
-
-            for (let i = 0; i < pcm8k.length; i += CONFIG.TTS_CHUNK_SIZE) {
-                if (state.interrupted || !state.botSpeaking) {
-                    console.log(`🛑 Interrupted at chunk ${i}/${pcm8k.length}`);
-                    sendClearEvent(exotelWs, state.streamSid);
-                    break;
-                }
-
-                const chunk = pcm8k.slice(i, i + CONFIG.TTS_CHUNK_SIZE);
-                const padded = chunk.length < CONFIG.TTS_CHUNK_SIZE
-                    ? Buffer.concat([chunk, Buffer.alloc(CONFIG.TTS_CHUNK_SIZE - chunk.length)])
-                    : chunk;
-
-                exotelWs.send(JSON.stringify({
-                    event: "media",
-                    stream_sid: state.streamSid,
-                    media: { payload: padded.toString("base64") }
-                }));
-
-                await sleep(5);
-            }
+        if (state.interrupted || !state.botSpeaking) {
+            console.log("🛑 Interrupted during TTS generation");
+            return;
         }
 
-        if (!state.interrupted) {
-            const speakTime = Date.now() - speakStart;
-            console.log(`🔊 Speech completed: ${speakTime}ms`);
-            state.fullTranscript.push({
-                role: "bot",
-                text,
-                timestamp: Date.now() - state.sessionStartTime
-            });
+        if (!audio16k || audio16k.length === 0) {
+            console.error("❌ Empty TTS audio");
+            return;
+        }
+
+        const pcm8k = convert16kHzPCMTo8kHz(audio16k);
+
+        // Stream audio with minimal delay
+        for (let i = 0; i < pcm8k.length; i += CONFIG.TTS_CHUNK_SIZE) {
+            if (state.interrupted || !state.botSpeaking) {
+            console.log(`🛑 Interrupted at chunk ${i}/${pcm8k.length}`);
+            sendClearEvent(exotelWs, state.streamSid);
+            break;
+            }
+
+            const chunk = pcm8k.slice(i, i + CONFIG.TTS_CHUNK_SIZE);
+            const padded = chunk.length < CONFIG.TTS_CHUNK_SIZE
+            ? Buffer.concat([chunk, Buffer.alloc(CONFIG.TTS_CHUNK_SIZE - chunk.length)])
+            : chunk;
+
+            exotelWs.send(JSON.stringify({
+            event: "media",
+            stream_sid: state.streamSid,
+            media: { payload: padded.toString("base64") }
+            }));
+
+            // Approximate real-time pacing: 3200 bytes at 8kHz 16‑bit ≈ 200ms
+            await sleep(200);
+        }
+        }
+
+        if (!state.interrupted && state.botSpeaking) {
+        const speakTime = Date.now() - speakStart;
+        console.log(`🔊 Speech completed: ${speakTime}ms`);
+        state.fullTranscript.push({
+            role: "bot",
+            text,
+            timestamp: Date.now() - state.sessionStartTime
+        });
         }
 
     } catch (err) {
         const isAborted = err?.message === "TTS_ABORTED" ||
-            (err?.message === "No audio chunks received" && state.interrupted);
+            (err?.message === "No audio chunks received" && (state.interrupted || !state.botSpeaking));
         if (!isAborted) {
             console.error("❌ speakText error:", err.message);
             stateManager.metrics.errors++;
         }
     } finally {
-        state.botSpeaking = false;       // ← reset HERE, after await completes
-        state.sarvamSpeaking = false;    // ← reset HERE
-        state.lastSpeakEnd = Date.now(); // ← track when speaking ended
+        state.botSpeaking = false;
+        state.sarvamSpeaking = false;
         state.activeTTSAbort = null;
+        // state.lastUserActivity = Date.now();
 
+        // Process queue
         if (state.audioQueue?.length > 0 && !state.interrupted) {
-            const next = state.audioQueue.shift();
-            setTimeout(() => {
-                speakText(next.text, state, exotelWs, next.ttsOptions);
-            }, 50);
+        const next = state.audioQueue.shift();
+        setTimeout(() => {
+            speakText(next.text, state, exotelWs, next.ttsOptions);
+        }, 50); // Reduced delay
         }
+
+        setTimeout(() => {
+        state.interrupted = false;
+        }, 30); // Reduced delay
     }
-}
+    }
 
     // ============================================================================
     // 📞 CALL SETTINGS MANAGEMENT
@@ -2319,60 +2031,214 @@ if (state.userEndTime) {
     // 🗄️ KNOWLEDGE BASE & CALENDAR (Optimized)
     // ============================================================================
 
-    // async function embedText(text) {
-    // const cacheKey = text.toLowerCase().trim();
-    // if (stateManager.embeddingCache.has(cacheKey)) {
-    //     return stateManager.embeddingCache.get(cacheKey);
-    // }
+    async function embedText(text) {
+    const cacheKey = text.toLowerCase().trim();
+    if (stateManager.embeddingCache.has(cacheKey)) {
+        return stateManager.embeddingCache.get(cacheKey);
+    }
     
-    // const embed = await openai.embeddings.create({
-    //     model: "text-embedding-3-small",
-    //     input: text,
-    // });
+    const embed = await openai.embeddings.create({
+        model: "text-embedding-3-small",
+        input: text,
+    });
     
-    // const result = embed.data[0].embedding;
-    // stateManager.embeddingCache.set(cacheKey, result);
-    // return result;
+    const result = embed.data[0].embedding;
+    stateManager.embeddingCache.set(cacheKey, result);
+    return result;
+    }
+
+    async function preFetchAgentKnowledge(agentId) {
+    try {
+        const queryEmbedding = await embedText(
+        "company information general query"
+        );
+
+        const results = await index.query({
+        vector: queryEmbedding,
+        topK: 3, // Reduced from 5
+        includeMetadata: true,
+        filter: { agent_id: agentId },
+        });
+
+        console.log(`🧠 KB fetched: ${results.matches.length} chunks`);
+
+        return results.matches.map(match => ({
+        content: match.metadata.content,
+        embedding: match.values
+        }));
+    } catch (error) {
+        console.error("❌ KB prefetch error:", error);
+        return [];
+    }
+    }
+
+    // ============================================================================
+    // 📞 EXOTEL API ROUTES
+    // ============================================================================
+
+    // fastify.post("/call-exotel", async (request, reply) => {
+    // const {
+    //     number: toNumber,
+    //     elevenLabsVoiceId,
+    //     elevenLabsSpeed,
+    //     elevenLabsStability,
+    //     elevenLabsSimilarityBoost,
+    //     sarvamVoice,
+    //     transcriberProvider,
+    //     transcriberLanguage,
+    //     transcriberModel,
+    //     aiModel,
+    //     temperature,
+    //     systemPrompt,
+    //     firstMessage,
+    //     maxTokens,
+    //     agentId,
+    // } = request.body;
+
+    // if (!agentId) {
+    //     return reply.code(400).send({ error: "agentId is required" });
     // }
 
-    // async function preFetchAgentKnowledge(agentId) {
+    // // Rate limiting
+    // if (!stateManager.checkRateLimit(toNumber)) {
+    //     return reply.code(429).send({ error: "Rate limit exceeded" });
+    // }
+
+    // // Concurrent call limiting
+    // if (stateManager.metrics.activeCalls >= CONFIG.MAX_CONCURRENT_CALLS) {
+    //     return reply.code(503).send({ error: "Maximum concurrent calls reached" });
+    // }
+
+    // if (!toNumber || !/^\+?[1-9]\d{9,14}$/.test(toNumber)) {
+    //     return reply.code(400).send({ error: "Invalid phone number" });
+    // }
+
     // try {
-    //     const queryEmbedding = await embedText(
-    //     "company information general query"
-    //     );
+    //     const [calendarConfig, knowledgeChunks] = await Promise.all([
+    //     getAgentCalendarConfig(agentId),
+    //     preFetchAgentKnowledge(agentId),
+    //     ]);
 
-    //     const results = await index.query({
-    //     vector: queryEmbedding,
-    //     topK: 3, // Reduced from 5
-    //     includeMetadata: true,
-    //     filter: { agent_id: agentId },
+    //     const enhancedSystemPrompt = createEnhancedSystemPrompt(systemPrompt, calendarConfig);
+
+    //     let formattedToNumber = toNumber.replace(/\D/g, "");
+    //     if (formattedToNumber.startsWith("91") && formattedToNumber.length === 12) {
+    //     formattedToNumber = formattedToNumber.slice(2);
+    //     }
+
+    //     if (formattedToNumber.length !== 10) {
+    //     throw new Error(`Invalid Indian mobile: ${formattedToNumber}`);
+    //     }
+
+    //     const formattedFromNumber = EXOTEL_PHONE_NUMBER.replace(/\D/g, "");
+    //     const authHeader = Buffer.from(`${EXOTEL_API_KEY}:${EXOTEL_API_TOKEN}`).toString("base64");
+
+    //     const payload = querystring.stringify({
+    //     From: formattedFromNumber,
+    //     To: formattedToNumber,
+    //     CallerId: formattedFromNumber,
+    //     recordingChannels: "dual",
+    //     TimeLimit: 3600,
+    //     Record: "true",
+    //     Timeout: 30,
+    //     CallType: "trans",
+    //     CustomFields: JSON.stringify({
+    //         agentId,
+    //         elevenLabsVoiceId,
+    //         elevenLabsSpeed,
+    //         elevenLabsStability,
+    //         elevenLabsSimilarityBoost,
+    //         sarvamVoice,
+    //         transcriberProvider,
+    //         transcriberLanguage,
+    //         transcriberModel,
+    //         aiModel,
+    //         temperature,
+    //         systemPrompt,
+    //         firstMessage,
+    //         maxTokens,
+    //     }),
     //     });
 
-    //     console.log(`🧠 KB fetched: ${results.matches.length} chunks`);
+    //     const response = await fetch(
+    //     `https://api.exotel.com/v1/Accounts/${EXOTEL_SID}/Calls/connect.json`,
+    //     {
+    //         method: "POST",
+    //         headers: {
+    //         "Authorization": `Basic ${authHeader}`,
+    //         "Content-Type": "application/x-www-form-urlencoded",
+    //         "Accept": "application/json",
+    //         },
+    //         body: payload,
+    //     }
+    //     );
 
-    //     return results.matches.map(match => ({
-    //     content: match.metadata.content,
-    //     embedding: match.values
-    //     }));
-    // } catch (error) {
-    //     console.error("❌ KB prefetch error:", error);
-    //     return [];
+    //     const responseText = await response.text();
+
+    //     if (!response.ok) {
+    //     throw new Error(`Exotel API error: ${response.status} - ${responseText}`);
+    //     }
+
+    //     const callData = JSON.parse(responseText);
+    //     const callSid = callData.Call?.Sid || callData.Sid;
+        
+    //     if (!callSid) {
+    //     throw new Error("No Call SID returned");
+    //     }
+
+    //     await saveCallSettings(callSid, {
+    //     agentId,
+    //     elevenLabsVoiceId,
+    //     elevenLabsSpeed: elevenLabsSpeed || 1.0,
+    //     elevenLabsStability: elevenLabsStability || 0.7,
+    //     elevenLabsSimilarityBoost: elevenLabsSimilarityBoost || 0.7,
+    //     sarvamVoice: (typeof sarvamVoice === "string" && sarvamVoice.trim()) ? sarvamVoice.trim() : "Karun",
+    //     transcriberProvider,
+    //     transcriberLanguage,
+    //     transcriberModel,
+    //     aiModel,
+    //     temperature: Number.isFinite(parseFloat(temperature)) ? parseFloat(temperature) : 0.7,
+    //     systemPrompt: enhancedSystemPrompt,
+    //     firstMessage,
+    //     maxTokens: Number.isInteger(parseInt(maxTokens, 10)) ? parseInt(maxTokens, 10) : CONFIG.OPENAI_MAX_TOKENS_NORMAL,
+    //     calendarConfig,
+    //     knowledgeChunks,
+    //     provider: "exotel"
+    //     });
+
+    //     stateManager.metrics.totalCalls++;
+    //     stateManager.metrics.activeCalls++;
+
+    //     reply.send({
+    //     success: true,
+    //     callSid,
+    //     to: toNumber,
+    //     provider: "exotel",
+    //     });
+
+    // } catch (err) {
+    //     console.error("❌ Call creation failed:", err);
+    //     stateManager.metrics.errors++;
+    //     reply.code(500).send({ 
+    //     error: "Failed to create call", 
+    //     details: err.message 
+    //     });
     // }
-    // }
-
-
-    
-
+    // });
 
     fastify.post("/call-exotel", async (request, reply) => {
   const {
     // 📞 Call target
     number: toNumber,
     agentId,
+
+    // 🔑 Exotel creds (ONLY source of truth)
     exotelAccountSid,
     exotelApiKey,
     exotelApiToken,
     exotelPhoneNumber,
+
+    // 🤖 AI / Voice config
     elevenLabsVoiceId,
     elevenLabsSpeed,
     elevenLabsStability,
@@ -2666,6 +2532,7 @@ fastify.get("/get-agent-number", async (req, reply) => {
         sarvamSpeaking: false,
         audioQueue: [],
         activeTTSAbort: null,
+        // Turn control (prevents multiple responses per utterance)
         pendingFinalText: "",
         finalDebounceTimer: null,
         turnSeq: 0,
@@ -2678,14 +2545,6 @@ fastify.get("/get-agent-number", async (req, reply) => {
         callEnding: false,
         escalating: false,
         agentPhone: null,
-        awaitingMeetingEmail: false,
-        awaitingMeetingPhone: false,
-        meetingEmail: null,
-        meetingPhone: null,
-         phoneBuffer: null,
-        phoneAttempts: 0,
-         lastSpeakStart: null,  // ← ADD
-    lastSpeakEnd: null,    // ← ADD (already set in speakText, just init here)
         };
 
         const queueTurnFromFinal = (finalPiece) => {
@@ -2740,29 +2599,14 @@ fastify.get("/get-agent-number", async (req, reply) => {
         }, 800);
         };
 
-  function extractKeywordsFromKB(chunks = []) {
-  if (!chunks || chunks.length === 0) return [];
-
-  const text = chunks.map(c => c.content || "").join(" ");
-
-  const words = text.match(/\b[A-Z][a-zA-Z]+\b/g) || [];
-
-  return [...new Set(words)]
-    .filter(w => w.length > 4)
-    .slice(0, 5); // 🔥 ONLY 5 CLEAN WORDS
-}
         const connectDeepgram = async (sampleRate = 8000) => {
         if (!state.streamSid) return;
 
         const settings = await getCallSettings(state.streamSid, state.callSid);
-  const dynamicKeywords = extractKeywordsFromKB(settings?.knowledgeChunks || [])
-  .slice(0, 5); // 🔥 HARD LIMIT
-        const safeKeywords = dynamicKeywords.length > 0 ? dynamicKeywords : ["oracle"];
-        console.log("🧠 Deepgram Keywords:", dynamicKeywords);
         if (!settings) return;
 
         deepgramWs = deepgram.listen.live({
-            model: settings?.transcriberModel || "nova-3-general",
+            model: settings?.transcriberModel || "nova-2-general",
             language: settings?.transcriberLanguage || "en",
             encoding: "linear16",
             sample_rate: sampleRate,
@@ -2775,57 +2619,49 @@ fastify.get("/get-agent-number", async (req, reply) => {
         deepgramWs.on(LiveTranscriptionEvents.Open, () => {
             console.log("✅ Deepgram connected");
         });
-deepgramWs.on(LiveTranscriptionEvents.Transcript, (data) => {
-    const transcript = data.channel?.alternatives?.[0]?.transcript || "";
-    const isFinal = data.is_final;
 
-    // Grace period: audio may still be playing on phone after botSpeaking resets.
-    // BUT only apply grace period for the PREVIOUS speech session —
-    // once an interrupt fires, clear lastSpeakEnd so it doesn't keep firing.
-    const withinGracePeriod = state.lastSpeakEnd && 
-        Date.now() - state.lastSpeakEnd < 2000 &&
-        // Don't apply grace period if a new speak session started after lastSpeakEnd
-        (!state.lastSpeakStart || state.lastSpeakEnd > state.lastSpeakStart);
+        deepgramWs.on(LiveTranscriptionEvents.Transcript, (data) => {
+            const transcript = data.channel?.alternatives?.[0]?.transcript || "";
+            const isFinal = data.is_final;
 
-    const audioStillPlaying = state.botSpeaking || withinGracePeriod;
+            // Any detected speech while bot is speaking should interrupt fast
+            if (transcript && state.botSpeaking && !state.interrupted) {
+                console.log(`🛑 INTERRUPT: "${transcript}"`);
+                state.interrupted = true;
+                state.botSpeaking = false;
+                state.sarvamSpeaking = false;
+                sendClearEvent(exotelWs, state.streamSid);
+                setImmediate(() => sendClearEvent(exotelWs, state.streamSid));
 
-    if (transcript && audioStillPlaying && !state.interrupted) {
-        console.log(`🛑 INTERRUPT: "${transcript}"`);
-        state.interrupted = true;
-        state.botSpeaking = false;
-        state.sarvamSpeaking = false;
-        state.lastSpeakEnd = null; // ← CLEAR so grace period stops firing
+                if (state.activeTTSAbort) {
+                state.activeTTSAbort.abort();
+                state.activeTTSAbort = null;
+                }
+                if (state.activeTurnAbort) {
+                try { state.activeTurnAbort.abort(); } catch {}
+                state.activeTurnAbort = null;
+                }
 
-        sendClearEvent(exotelWs, state.streamSid);
-        setImmediate(() => sendClearEvent(exotelWs, state.streamSid));
+                state.metrics.interruptsCount++;
+            }
 
-        if (state.activeTTSAbort) {
-            state.activeTTSAbort.abort();
-            state.activeTTSAbort = null;
-        }
-        if (state.activeTurnAbort) {
-            try { state.activeTurnAbort.abort(); } catch {}
-            state.activeTurnAbort = null;
-        }
+            if (transcript) {
+            state.currentTranscript = transcript;
+            if (!isFinal) {
+                console.log(`📝 ${transcript}`);
+            }
+            }
 
-        state.metrics.interruptsCount++;
-    }
+            if (isFinal && transcript.trim()) {
+            state.userSpeaking = false;
+            const finalText = transcript.trim();
+            state.currentTranscript = "";
+            state.lastUserActivity = Date.now();
 
-    if (transcript) {
-        state.currentTranscript = transcript;
-        if (!isFinal) {
-            console.log(`📝 ${transcript}`);
-        }
-    }
-
-    if (isFinal && transcript.trim()) {
-        state.userSpeaking = false;
-        const finalText = transcript.trim();
-        state.currentTranscript = "";
-        state.lastUserActivity = Date.now();
-        queueTurnFromFinal(finalText);
-    }
-});
+            // Merge multiple final chunks, respond once
+            queueTurnFromFinal(finalText);
+            }
+        });
 
         deepgramWs.on(LiveTranscriptionEvents.Close, () => {
             console.log("🔌 Deepgram closed");
@@ -2879,16 +2715,31 @@ deepgramWs.on(LiveTranscriptionEvents.Transcript, (data) => {
             } else {
                 console.log(`📞 Inbound call: ${state.callSid}`);
                 
-              
+                // if (!callSettings.has(state.callSid)) {
+                // const settings = {
+                //     agentId: process.env.DEFAULT_AGENT_ID || 'default',
+                //     aiModel: "gpt-4o-mini",
+                //     temperature: 0.7,
+                //     systemPrompt: "You are a helpful AI assistant.",
+                //     firstMessage: "Hello! How can I help you?",
+                //     maxTokens: 50,
+                //     sarvamVoice: process.env.DEFAULT_SARVAM_VOICE || "Karun",
+                //     transcriberLanguage: process.env.DEFAULT_TRANSCRIBER_LANGUAGE || "en",
+                //     callType: "inbound",
+                //     createdAt: Date.now(),
+                //     lastAccessed: Date.now()
+                // };
+                
+                // callSettings.set(state.callSid, settings);
+                // }
+
                 if (!callSettings.has(state.callSid)) {
   console.log("📞 Inbound Exotel call detected");
 
   const exotelNumber =
     evt.start.to || evt.start.called || evt.start.caller_id;
 
-  // const inboundSettings = await loadInboundSettingsByPhone(exotelNumber);
-  const inboundSettings = inboundSettingsCache.get(exotelNumber)
-  ?? await loadInboundSettingsByPhone(exotelNumber);
+  const inboundSettings = await loadInboundSettingsByPhone(exotelNumber);
 
   if (!inboundSettings) {
     console.error(`❌ No inbound config for ${exotelNumber}`);
@@ -2979,6 +2830,44 @@ deepgramWs.on(LiveTranscriptionEvents.Transcript, (data) => {
             // Send greeting for inbound
             const settings = await getCallSettings(state.streamSid, state.callSid);
 
+//             if (settings?.workflow) {
+
+//   const { WorkflowEngine } = await import('../src/workflowEngine.js');
+
+//   const engine = new WorkflowEngine(settings.workflow);
+
+//   state.workflowEngine = engine;
+//   state.agentId = settings.agentId;
+//   state.knowledgeChunks = settings.knowledgeChunks;
+//   state.aiModel = settings.aiModel || "gpt-4o-mini";
+//   state.temperature = settings.temperature || 0.5;
+//   state.openai = openai;
+//   state.index = index;
+
+//   state.elevenLabsVoiceId = settings.elevenLabsVoiceId;
+//   state.sarvamVoice = settings.sarvamVoice;
+//   state.transcriberLanguage = settings.transcriberLanguage;
+//   // Get first node
+//   const startNode = engine.getStartNode();
+
+//   state.currentNode = startNode;
+
+//   // Execute first node (Initial Greeting)
+//  setTimeout(async () => {
+//   console.log("⏳ Delayed workflow start (4 seconds)");
+
+//   await engine.executeNode(
+//     startNode,
+//     state,
+//     exotelWs,
+//     speakText,
+//     endCall
+//   );
+
+// }, 10000);
+
+// state.currentNode = startNode
+// }
 
 if (
   settings?.workflow &&
@@ -3024,7 +2913,7 @@ if (
       endCall
     );
 
-  }, 3000);
+  }, 10000);
 
 } else {
 
@@ -3037,7 +2926,16 @@ if (
             if (isInbound && settings?.firstMessage && !settings.workflow) {
                 setTimeout(async () => {
                     try {
-                 
+                    // await speakText(settings.firstMessage, state, exotelWs, {
+                    //     voiceId: settings.elevenLabsVoiceId || "hpp4J3VqNfWAUOO0d1Us",
+                    //     aggressive: true
+                    // });
+//                     await speakText(settings.firstMessage, state, exotelWs, {
+//   language: settings.transcriberLanguage,
+//   voice: (settings.sarvamVoice || "arya").toLowerCase(),  // Normalize to lowercase
+//   aggressive: true
+// });
+// const selectedVoice = (settings.sarvamVoice || "arya").toLowerCase();
 const selectedVoice = settings.elevenLabsVoiceId || "hpp4J3VqNfWAUOO0d1Us";
 const selectedLanguage = settings.sarvamLanguage || settings.transcriberLanguage || "kn";
 
@@ -3055,6 +2953,11 @@ console.log("First Message:", settings.firstMessage);
       console.log("=====================================");
 console.log("=====================================");
 
+// await speakText(settings.firstMessage, state, exotelWs, {
+//   language: selectedLanguage,
+//   voiceId: selectedVoice,
+//   aggressive: true
+// });
 const isSarvamLang = useSarvam(selectedLanguage);
 
 await speakText(settings.firstMessage, state, exotelWs, 
@@ -3164,6 +3067,33 @@ await speakText(settings.firstMessage, state, exotelWs,
     });
     });
 
+//     fastify.post("/exotel-call-status", async (req, reply) => {
+//   try {
+//     const body = req.body;
+//     console.log("Exotel webhook body:", req.body);
+//     const callSid = body?.CallSid || body?.call_details?.sid;
+//     const status = body?.Status || body?.call_details?.call_status;
+
+//     console.log(`📞 Exotel status callback: ${callSid} → ${status}`);
+
+//     if (["completed", "failed", "busy", "no-answer", "canceled"].includes(status)) {
+//       await markAgentFree(callSid);
+
+//       await db.query(`
+//         UPDATE call_routing_logs
+//         SET status = $1, ended_at = NOW()
+//         WHERE call_sid = $2
+//       `, [status, callSid]).catch(err => console.error("routing log update error:", err.message));
+
+//       console.log(`✅ Agent freed for: ${callSid}`);
+//     }
+
+//     reply.send({ ok: true });
+//   } catch (err) {
+//     console.error("❌ exotel-call-status error:", err.message);
+//     reply.send({ ok: false });
+//   }
+// });
 
 fastify.all("/exotel-call-status", async (req, reply) => {
 
@@ -3229,20 +3159,20 @@ fastify.all("/exotel-call-status", async (req, reply) => {
     // 🔧 HELPER FUNCTIONS (Calendar, etc.)
     // ============================================================================
 
-    // const API_BASE_URL = 'https://callagent.zoptrix.com/api';
+    const API_BASE_URL = 'https://callagent.zoptrix.com/api';
 
-    // function createEnhancedSystemPrompt(baseSystemPrompt, calendarConfig) {
-    // const currentTime = new Date().toISOString();
-    // const agentTimezone = calendarConfig?.effective_timezone || 'UTC';
+    function createEnhancedSystemPrompt(baseSystemPrompt, calendarConfig) {
+    const currentTime = new Date().toISOString();
+    const agentTimezone = calendarConfig?.effective_timezone || 'UTC';
     
-    // return `${baseSystemPrompt}
+    return `${baseSystemPrompt}
 
-    // Current UTC time: ${currentTime}
-    // Agent timezone: ${agentTimezone}
+    Current UTC time: ${currentTime}
+    Agent timezone: ${agentTimezone}
 
-    // Keep responses extremely concise (1-2 sentences). Speak naturally like a human in conversation.
-    // `;
-    // }
+    Keep responses extremely concise (1-2 sentences). Speak naturally like a human in conversation.
+    `;
+    }
 
     // function createAvailableFunctions(calendarConfig) {
     // const baseFunctions = [
@@ -3291,36 +3221,36 @@ fastify.all("/exotel-call-status", async (req, reply) => {
     // return baseFunctions;
     // }
 
-    // const getAgentCalendarConfig = async (agentId) => {
-    // try {
-    //     const response = await fetch(`${API_BASE_URL}/${agentId}/calendar-config`, {
-    //     method: 'GET',
-    //     headers: {
-    //         'Content-Type': 'application/json',
-    //         'Accept': 'application/json'
-    //     }
-    //     });
+    const getAgentCalendarConfig = async (agentId) => {
+    try {
+        const response = await fetch(`${API_BASE_URL}/${agentId}/calendar-config`, {
+        method: 'GET',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        }
+        });
 
-    //     if (!response.ok) return null;
+        if (!response.ok) return null;
 
-    //     const data = await response.json();
-    //     if (data?.agent_id) {
-    //     return {
-    //         agent_id: data.agent_id,
-    //         agent_name: data.name,
-    //         calendar_provider: data.provider,
-    //         calendar_access_token: data.access_token,
-    //         effective_timezone: data.calendar_timezone || data.agent_timezone || 'UTC',
-    //         user_id: data.user_id,
-    //     };
-    //     }
+        const data = await response.json();
+        if (data?.agent_id) {
+        return {
+            agent_id: data.agent_id,
+            agent_name: data.name,
+            calendar_provider: data.provider,
+            calendar_access_token: data.access_token,
+            effective_timezone: data.calendar_timezone || data.agent_timezone || 'UTC',
+            user_id: data.user_id,
+        };
+        }
 
-    //     return null;
-    // } catch (error) {
-    //     console.error("Calendar config error:", error);
-    //     return null;
-    // }
-    // };
+        return null;
+    } catch (error) {
+        console.error("Calendar config error:", error);
+        return null;
+    }
+    };
 
 
 
@@ -3328,86 +3258,80 @@ fastify.all("/exotel-call-status", async (req, reply) => {
     // ============================================================================
     // 🚀 EXPORT
     // ============================================================================
-// async function loadInboundSettingsByPhone(exotelNumber) {
-//   const result = await db.query(`
-//     SELECT ic.*, a.*
-//     FROM inbound_configs ic
-//     JOIN agents a ON a.id = ic.agent_id::uuid
-//     WHERE ic.phone_number = $1
-//   `, [exotelNumber]);
+async function loadInboundSettingsByPhone(exotelNumber) {
+  const result = await db.query(`
+    SELECT ic.*, a.*
+    FROM inbound_configs ic
+    JOIN agents a ON a.id = ic.agent_id::uuid
+    WHERE ic.phone_number = $1
+  `, [exotelNumber]);
 
-//   if (!result.rows.length) return null;
+  if (!result.rows.length) return null;
 
-//   const row = result.rows[0];
+  const row = result.rows[0];
 
-//   // const [calendarConfig, knowledgeChunks] = await Promise.all([
-//   //   getAgentCalendarConfig(row.agent_id),
-//   //   preFetchAgentKnowledge(row.agent_id),
-//   // ]);
+  const [calendarConfig, knowledgeChunks] = await Promise.all([
+    getAgentCalendarConfig(row.agent_id),
+    preFetchAgentKnowledge(row.agent_id),
+  ]);
 
-//   const [calendarConfig, knowledgeChunks, workflow] = await Promise.all([
-//   getAgentCalendarConfig(row.agent_id),
-//   preFetchAgentKnowledge(row.agent_id),
-//   loadWorkflowByAgent(row.agent_id),
-// ]);
+  // ✅ SAFE extraction (no assumptions)
+  const agentPrompt =
+    row.conversation_config?.agent?.prompt?.prompt ||
+    "You are a helpful AI assistant.";
 
-//   // ✅ SAFE extraction (no assumptions)
-//   const agentPrompt =
-//     row.conversation_config?.agent?.prompt?.prompt ||
-//     "You are a helpful AI assistant.";
+  const firstMessage =
+    row.conversation_config?.agent?.first_message ||
+    row.greeting_message ||
+    "Hello! How can I help you today?";
 
-//   const firstMessage =
-//     row.conversation_config?.agent?.first_message ||
-//     row.greeting_message ||
-//     "Hello! How can I help you today?";
+// Extract from conversation_config (SINGLE SOURCE OF TRUTH)
+const agentLanguage =
+  row.conversation_config?.agent?.language ||
+  row.conversation_config?.asr?.language ||
+  "kn";
 
-// // Extract from conversation_config (SINGLE SOURCE OF TRUTH)
-// const agentLanguage =
-//   row.conversation_config?.agent?.language ||
-//   row.conversation_config?.asr?.language ||
-//   "kn";
+const agentVoice =
+  row.conversation_config?.tts?.voice_id ||
+  "karun";
+console.log("🟢 ===== INBOUND SETTINGS DEBUG =====");
+console.log("Phone:", exotelNumber);
+console.log("Agent ID:", row.agent_id);
+console.log("Voice from conversation_config:", agentVoice);
+console.log("Language from conversation_config:", agentLanguage);
+console.log("ASR Model:", row.conversation_config?.asr?.model);
+console.log("=====================================");
+const workflow = await loadWorkflowByAgent(row.agent_id);
 
-// const agentVoice =
-//   row.conversation_config?.tts?.voice_id ||
-//   "karun";
-// console.log("🟢 ===== INBOUND SETTINGS DEBUG =====");
-// console.log("Phone:", exotelNumber);
-// console.log("Agent ID:", row.agent_id);
-// console.log("Voice from conversation_config:", agentVoice);
-// console.log("Language from conversation_config:", agentLanguage);
-// console.log("ASR Model:", row.conversation_config?.asr?.model);
-// console.log("=====================================");
-// // const workflow = await loadWorkflowByAgent(row.agent_id);
-
-// console.log("📊 Loaded workflow:", workflow?.id || "none");
-// return {
-//   agentId: row.agent_id,
-//   agentName: row.name,
-//   aiModel: "gpt-4o-mini",
-//   temperature: 0.7,
-//   maxTokens: 180,
-//   systemPrompt: createEnhancedSystemPrompt(agentPrompt, calendarConfig),
-//   agentPrompt,
-//   firstMessage,
-//   calendarConfig,
-//   knowledgeChunks,
-//   elevenLabsVoiceId: agentVoice, 
-//   sarvamVoice: agentVoice,
-//   sarvamLanguage: agentLanguage,
-//   transcriberLanguage: agentLanguage,
-//   transcriberModel: row.conversation_config?.asr?.model || "nova-3",
-//   callType: "inbound",
-//   provider: "exotel",
-//   workflow,
-//   createdAt: Date.now(),
-//   lastAccessed: Date.now(),
-//    customerPhone: null, // Will be populated from WebSocket start event
-//   exotelAccountSid: process.env.EXOTEL_SID,
-//   exotelApiKey: process.env.EXOTEL_API_KEY,
-//   exotelApiToken: process.env.EXOTEL_API_TOKEN,
-//   exotelPhoneNumber: process.env.EXOTEL_PHONE_NUMBER,
-// };
-// }
+console.log("📊 Loaded workflow:", workflow?.id || "none");
+return {
+  agentId: row.agent_id,
+  agentName: row.name,
+  aiModel: "gpt-4o-mini",
+  temperature: 0.7,
+  maxTokens: 180,
+  systemPrompt: createEnhancedSystemPrompt(agentPrompt, calendarConfig),
+  agentPrompt,
+  firstMessage,
+  calendarConfig,
+  knowledgeChunks,
+  elevenLabsVoiceId: agentVoice, 
+  sarvamVoice: agentVoice,
+  sarvamLanguage: agentLanguage,
+  transcriberLanguage: agentLanguage,
+  transcriberModel: row.conversation_config?.asr?.model || "nova-3",
+  callType: "inbound",
+  provider: "exotel",
+  workflow,
+  createdAt: Date.now(),
+  lastAccessed: Date.now(),
+   customerPhone: null, // Will be populated from WebSocket start event
+  exotelAccountSid: process.env.EXOTEL_SID,
+  exotelApiKey: process.env.EXOTEL_API_KEY,
+  exotelApiToken: process.env.EXOTEL_API_TOKEN,
+  exotelPhoneNumber: process.env.EXOTEL_PHONE_NUMBER,
+};
+}
     }
 
     // For standalone usage
