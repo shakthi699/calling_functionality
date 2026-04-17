@@ -64,7 +64,7 @@ const INDIAN_LANGUAGES = {
 };
 
 
-const SARVAM_LANGS = ["kn", "te", "mr", "gu", "bn", "ml", "pa","ta","hi"];
+const SARVAM_LANGS = ["kn", "te", "mr", "gu", "bn", "ml", "pa","ta","hi","en"];
 
 function shouldUseSarvam(languageCode) {
   if (!languageCode) return false;
