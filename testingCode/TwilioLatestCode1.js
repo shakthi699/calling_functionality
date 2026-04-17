@@ -350,7 +350,7 @@ class SarvamTTS {
 //   async generateAndStream(text, options = {}, twilioWs, state) {
 //     if (!text?.trim() || state.interrupted || state.callEnded) return 0;
 
-//     const voiceId = options.voiceId || "pNInz6obpgDQGcFmaJgB";
+//     const voiceId = options.voiceId || "FGY2WhTYpPnrIDTdsKH5";
 //     const speed = options.speed ?? 1.2;
 //     const stability = options.stability ?? 1.0;
 //     const similarityBoost = options.similarityBoost ?? 1.0;
@@ -486,7 +486,7 @@ class ElevenLabsTTS {
   async generateAndStream(text, options = {}, twilioWs, state) {
     if (!text?.trim() || state.interrupted || state.callEnded) return 0;
 
-    const voiceId = options.voiceId || "pNInz6obpgDQGcFmaJgB";
+    const voiceId = options.voiceId || "FGY2WhTYpPnrIDTdsKH5";
     const speed = options.speed ?? 1.2;
     const stability = options.stability ?? 1.0;
     const similarityBoost = options.similarityBoost ?? 1.0;
@@ -639,7 +639,7 @@ class TTSManager {
     } else {
       console.log(`🎤 Using ElevenLabs TTS for language: ${languageCode}`);
       return await this.elevenLabsTTS.generateAndStream(text, {
-        voiceId: options.elevenLabsVoiceId || "pNInz6obpgDQGcFmaJgB",
+        voiceId: options.elevenLabsVoiceId || "FGY2WhTYpPnrIDTdsKH5",
         speed: options.elevenLabsSpeed ?? 1.2,
         stability: options.elevenLabsStability ?? 1.0,
         similarityBoost: options.elevenLabsSimilarityBoost ?? 1.0
@@ -2788,7 +2788,7 @@ console.log("===================================");
   transcriberLanguage: agentLanguage,
   transcriberModel: agent.conversation_config?.asr?.model || "nova-3",
       // ElevenLabs settings (if configured)
-      elevenLabsVoiceId: agent.conversation_config?.tts?.voice_id || "pNInz6obpgDQGcFmaJgB",
+      elevenLabsVoiceId: agent.conversation_config?.tts?.voice_id || "FGY2WhTYpPnrIDTdsKH5",
   elevenLabsSpeed: parseFloat(agent.conversation_config?.tts?.speed) || 1.2,
   elevenLabsStability: agent.conversation_config?.tts?.stability || 1.0,
   elevenLabsSimilarityBoost: agent.conversation_config?.tts?.similarity_boost || 1.0,
