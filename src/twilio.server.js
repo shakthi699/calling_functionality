@@ -2826,7 +2826,7 @@ console.log("===================================");
   transcriberLanguage: agentLanguage,
   transcriberModel: agent.conversation_config?.asr?.model || "nova-3",
       // ElevenLabs settings (if configured)
-      elevenLabsVoiceId: agent.conversation_config?.tts?.voice_id || "pNInz6obpgDQGcFmaJgB",
+      elevenLabsVoiceId: agent.conversation_config?.tts?.voice_id || "FGY2WhTYpPnrIDTdsKH5",
   elevenLabsSpeed: parseFloat(agent.conversation_config?.tts?.speed) || 1.2,
   elevenLabsStability: agent.conversation_config?.tts?.stability || 1.0,
   elevenLabsSimilarityBoost: agent.conversation_config?.tts?.similarity_boost || 1.0,
