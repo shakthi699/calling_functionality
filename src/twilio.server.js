@@ -2793,6 +2793,9 @@ async function loadInboundSettingsByPhone(phoneNumber) {
       }
     }
 
+    console.log(`📋 [INBOUND PROMPT] Length: ${systemPrompt.length}`);
+console.log(`📋 [INBOUND PROMPT] Preview: "${systemPrompt.slice(0, 150)}"`);
+
     const [calendarConfig, knowledgeChunks,workflow] = await Promise.all([
       getAgentCalendarConfig(agent.id),
       preFetchAgentKnowledge(agent.id),
