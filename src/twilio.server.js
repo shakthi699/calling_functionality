@@ -2426,9 +2426,9 @@ state.sessions = sessions;
   }
 console.log(`📚 [KB CONTEXT] Length: ${kbContext.length} chars | Chunks used: ${relevantChunks.length}`);
   const agentPrompt = settings.agentPrompt || settings.systemPrompt || "";
-  console.log(`📋 [AGENT PROMPT IN TURN] Length: ${agentPrompt.length} | Preview: "${agentPrompt.slice(0, 100)}"`);
+
   const systemPrompt = `${agentPrompt}
-   
+
 ${kbContext ? `KNOWLEDGE BASE (use this to answer the user's question — prioritize this over general knowledge):\n${kbContext}\n` : ''}
 
 IMPORTANT RULES:
@@ -2792,9 +2792,6 @@ async function loadInboundSettingsByPhone(phoneNumber) {
         systemPrompt = promptConfig;
       }
     }
-
-    console.log(`📋 [INBOUND PROMPT] Length: ${systemPrompt.length}`);
-console.log(`📋 [INBOUND PROMPT] Preview: "${systemPrompt.slice(0, 150)}"`);
 
     const [calendarConfig, knowledgeChunks,workflow] = await Promise.all([
       getAgentCalendarConfig(agent.id),
