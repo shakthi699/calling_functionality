@@ -2423,11 +2423,18 @@ state.sessions = sessions;
 
   const agentPrompt = settings.agentPrompt || settings.systemPrompt || "";
 
-  const systemPrompt = `${agentPrompt}
+ const systemPrompt = `${agentPrompt}
 
 ${kbContext ? `KNOWLEDGE:\n${kbContext}\n` : ''}
 
-Keep responses under 50 words. Be conversational and quick.`.trim();
+Instructions:
+- If knowledge is provided, you MUST use it to answer
+- Prefer knowledge over your own general knowledge
+- If partially relevant, adapt it
+- If no knowledge is available, answer normally
+- NEVER say "I don’t have knowledge base information"
+- Keep response under 50 words and conversational
+`.trim();
 
   const messages = [
     { role: "system", content: systemPrompt },
@@ -2461,59 +2468,7 @@ const ttsOpts = {
     pace: 1.15,
   };
 
-//   let fullBotReply = "";
 
-// try {
-//   const stream = await openai.chat.completions.create({
-//     model: settings.aiModel || "gpt-4o-mini",
-//     temperature: settings.temperature ?? 0.7,
-//     max_tokens: 100,
-//     messages,
-//     stream: true,
-//   });
-
-//   for await (const chunk of stream) {
-//     if (state.interrupted || state.callEnded) break;
-
-//     const token = chunk.choices?.[0]?.delta?.content ?? "";
-//     if (!token) continue;
-
-//     const clean = token
-//       .replace(/^(\s*[-*+]|\s*\d+\.)\s+/g, "")
-//       .replace(/[*_~`>#]/g, "")
-//       .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-
-//     fullBotReply += clean;
-//   }
-
-// } catch (err) {
-//   console.error("[LLM stream error]", err.message);
-//   fullBotReply = "Sorry, could you repeat that?";
-// }
-
-// if (state.interrupted) {
-//   state.interrupted = false;
-//   return;
-// }
-
-// fullBotReply = fullBotReply.trim();
-// if (!fullBotReply || fullBotReply.length < 5) {
-//   fullBotReply = "Could you say more about that?";
-// }
-
-// state.lastUserActivity = Date.now();
-
-// console.log("🤖 AI RESPONSE", {
-//   callSid,
-//   streamSid,
-//   text: fullBotReply.slice(0, 500),
-//   ts: new Date().toISOString(),
-// });
-
-// await speakText(fullBotReply, state, twilioWs, ttsOpts);
-
-// REPLACE WITH:
-// REPLACE WITH:
 let fullBotReply = "";
 
 try {
