@@ -860,6 +860,7 @@ async function embedText(text) {
 // }
 
 async function preFetchAgentKnowledge(agentId) {
+  console.log("🔍 preFetchAgentKnowledge called with agentId:", agentId, typeof agentId);
   try {
     const queryEmbedding = await embedText("general information about products and services");
     if (!queryEmbedding) return [];
@@ -871,7 +872,7 @@ async function preFetchAgentKnowledge(agentId) {
        WHERE agent_id = $1`,
       [agentId]
     );
-
+    console.log("🔍 KB result rows:", kbResult.rows); 
     const kbIds = kbResult.rows.map(r => r.knowledge_base_id);
 
     console.log("Agent ID:", agentId);
@@ -2418,23 +2419,17 @@ state.sessions = sessions;
 
   let kbContext = "";
   if (relevantChunks.length > 0) {
+
     kbContext = relevantChunks.map(chunk => chunk.content).join('\n\n');
   }
 
   const agentPrompt = settings.agentPrompt || settings.systemPrompt || "";
 
- const systemPrompt = `${agentPrompt}
+  const systemPrompt = `${agentPrompt}
 
 ${kbContext ? `KNOWLEDGE:\n${kbContext}\n` : ''}
 
-Instructions:
-- If knowledge is provided, you MUST use it to answer
-- Prefer knowledge over your own general knowledge
-- If partially relevant, adapt it
-- If no knowledge is available, answer normally
-- NEVER say "I don’t have knowledge base information"
-- Keep response under 50 words and conversational
-`.trim();
+Keep responses under 50 words. Be conversational and quick.`.trim();
 
   const messages = [
     { role: "system", content: systemPrompt },
@@ -2468,7 +2463,59 @@ const ttsOpts = {
     pace: 1.15,
   };
 
+//   let fullBotReply = "";
 
+// try {
+//   const stream = await openai.chat.completions.create({
+//     model: settings.aiModel || "gpt-4o-mini",
+//     temperature: settings.temperature ?? 0.7,
+//     max_tokens: 100,
+//     messages,
+//     stream: true,
+//   });
+
+//   for await (const chunk of stream) {
+//     if (state.interrupted || state.callEnded) break;
+
+//     const token = chunk.choices?.[0]?.delta?.content ?? "";
+//     if (!token) continue;
+
+//     const clean = token
+//       .replace(/^(\s*[-*+]|\s*\d+\.)\s+/g, "")
+//       .replace(/[*_~`>#]/g, "")
+//       .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+
+//     fullBotReply += clean;
+//   }
+
+// } catch (err) {
+//   console.error("[LLM stream error]", err.message);
+//   fullBotReply = "Sorry, could you repeat that?";
+// }
+
+// if (state.interrupted) {
+//   state.interrupted = false;
+//   return;
+// }
+
+// fullBotReply = fullBotReply.trim();
+// if (!fullBotReply || fullBotReply.length < 5) {
+//   fullBotReply = "Could you say more about that?";
+// }
+
+// state.lastUserActivity = Date.now();
+
+// console.log("🤖 AI RESPONSE", {
+//   callSid,
+//   streamSid,
+//   text: fullBotReply.slice(0, 500),
+//   ts: new Date().toISOString(),
+// });
+
+// await speakText(fullBotReply, state, twilioWs, ttsOpts);
+
+// REPLACE WITH:
+// REPLACE WITH:
 let fullBotReply = "";
 
 try {
@@ -2719,6 +2766,8 @@ async function loadInboundSettingsByPhone(phoneNumber) {
     const agentResult = await db.query(`
       SELECT * FROM agents WHERE id::text = $1::text
     `, [config.agent_id]);
+
+    console.log("🔍 Inbound agent.id:", agentResult.rows[0]?.id, typeof agentResult.rows[0]?.id);
 
     if (!agentResult.rows.length) return null;
 
