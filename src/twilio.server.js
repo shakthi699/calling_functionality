@@ -937,14 +937,10 @@ async function getRelevantChunks(userText, agentId, preloadedChunks, topK = 3) {
       return { content: chunk.content, score };
     });
 
-    // return scored
-    //   .sort((a, b) => b.score - a.score)
-    //   .slice(0, topK)
-    //   .filter(c => c.score > 0 || topK === Infinity);
     return scored
-  .sort((a, b) => b.score - a.score)
-  .slice(0, topK); 
-  
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK)
+      .filter(c => c.score > 0 || topK === Infinity);
   } catch (error) {
     console.error('Error getting relevant knowledge:', error.message);
     return preloadedChunks.slice(0, topK);
@@ -1402,7 +1398,7 @@ async function processTurn(userText, state, twilioWs, callSettings, sessions, st
   const streamSid = state.streamSid;
   const callSid = streamToCallMap.get(streamSid);
   const settings = callSettings.get(callSid);
-  console.log(`📚 [PROCESS TURN] KB chunks in settings: ${settings.knowledgeChunks?.length || 0} | AgentId: ${settings.agentId}`);
+
   if (!settings) {
     console.warn(`[processTurn] No settings for ${streamSid}`);
     return;
@@ -1814,7 +1810,7 @@ Examples:
 const [intent, relevantChunks] = await Promise.all([
     detectIntent(cleaned),
     (settings.knowledgeChunks?.length > 0)
-      ? getRelevantChunks(cleaned, settings.agentId, settings.knowledgeChunks, 3)
+      ? getRelevantChunks(cleaned, settings.agentId, settings.knowledgeChunks, 2)
       : Promise.resolve([])
   ]);
 
@@ -2424,17 +2420,14 @@ state.sessions = sessions;
   if (relevantChunks.length > 0) {
     kbContext = relevantChunks.map(chunk => chunk.content).join('\n\n');
   }
-console.log(`📚 [KB CONTEXT] Length: ${kbContext.length} chars | Chunks used: ${relevantChunks.length}`);
+
   const agentPrompt = settings.agentPrompt || settings.systemPrompt || "";
 
   const systemPrompt = `${agentPrompt}
 
-${kbContext ? `KNOWLEDGE BASE (use this to answer the user's question — prioritize this over general knowledge):\n${kbContext}\n` : ''}
+${kbContext ? `KNOWLEDGE:\n${kbContext}\n` : ''}
 
-IMPORTANT RULES:
-- If the answer is in the KNOWLEDGE BASE above, use it directly to answer. Do NOT say "I don't have information".
-- Only say you don't know if the topic is completely absent from the knowledge base.
-- Keep responses under 50 words. Be conversational and quick.`.trim();
+Keep responses under 50 words. Be conversational and quick.`.trim();
 
   const messages = [
     { role: "system", content: systemPrompt },
@@ -2798,7 +2791,6 @@ async function loadInboundSettingsByPhone(phoneNumber) {
       preFetchAgentKnowledge(agent.id),
       loadWorkflowByAgent(agent.id), 
     ]);
-    console.log(`📚 [INBOUND KB] Agent: ${agent.id} | Chunks loaded: ${knowledgeChunks?.length || 0}`);
 
     // Extract from conversation_config (SINGLE SOURCE OF TRUTH)
 const agentLanguage =
