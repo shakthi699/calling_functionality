@@ -2429,9 +2429,12 @@ console.log(`📚 [KB CONTEXT] Length: ${kbContext.length} chars | Chunks used: 
 
   const systemPrompt = `${agentPrompt}
 
-${kbContext ? `KNOWLEDGE:\n${kbContext}\n` : ''}
+${kbContext ? `KNOWLEDGE BASE (use this to answer the user's question — prioritize this over general knowledge):\n${kbContext}\n` : ''}
 
-Keep responses under 50 words. Be conversational and quick.`.trim();
+IMPORTANT RULES:
+- If the answer is in the KNOWLEDGE BASE above, use it directly to answer. Do NOT say "I don't have information".
+- Only say you don't know if the topic is completely absent from the knowledge base.
+- Keep responses under 50 words. Be conversational and quick.`.trim();
 
   const messages = [
     { role: "system", content: systemPrompt },
