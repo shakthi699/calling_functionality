@@ -906,7 +906,7 @@ async function preFetchAgentKnowledge(agentId) {
   }
 }
 
-async function getRelevantChunks(userText, agentId, preloadedChunks, topK = 3) {
+async function getRelevantChunks(userText, agentId, preloadedChunks, topK = 5) {
   try {
     if (!preloadedChunks || preloadedChunks.length === 0) return [];
 
@@ -1841,15 +1841,23 @@ const [intent, relevantChunks] = await Promise.all([
 
       const agentPrompt = settings.agentPrompt || settings.systemPrompt || "";
 
-      const systemPrompt = `${agentPrompt}
+     const systemPrompt = `
+You are a voice call assistant.
 
-${kbContext ? `KNOWLEDGE:\n${kbContext}\n` : ''}
+Use ONLY the KNOWLEDGE section below to answer user questions directly.
 
-The user wants to speak to a human agent. Before transferring, try to resolve their issue yourself.
-- Acknowledge their request warmly
-- Ask what specific problem they need help with
-- Try your best to solve it
-- Keep response under 40 words`.trim();
+IMPORTANT RULES:
+- If answer exists in KNOWLEDGE, answer immediately.
+- Never ask unnecessary clarification.
+- Never say "I don't have enough information" if KB contains relevant data.
+- If user mentions a code like 4.126, search KB and explain it.
+- Be concise and natural.
+- Maximum 40 words.
+
+KNOWLEDGE:
+${kbContext || "No knowledge found"}
+
+`.trim();
 
       const messages = [
         { role: "system", content: systemPrompt },
