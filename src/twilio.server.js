@@ -694,12 +694,22 @@ class DeepgramSTT {
   // ============================================================
   // 🛑 INTERRUPTION (ONLY FOR INTERIM)
   // ============================================================
+  // if (!data.speech_final) {
+  //   if (this.onInterruption) {
+  // this.onInterruption(cleaned);
+  //   }
+  //   return; // 🔥 VERY IMPORTANT (stop here for interim)
+  // }
+
   if (!data.speech_final) {
-    if (this.onInterruption) {
-  this.onInterruption(cleaned);
-    }
-    return; // 🔥 VERY IMPORTANT (stop here for interim)
-  }
+   const words = cleaned.split(/\s+/).filter(Boolean);
+
+   if (cleaned.length >= 6 || words.length >= 2) {
+      this.onInterruption(cleaned);
+   }
+
+   return;
+}
 
   // ============================================================
   // ✅ FINAL TRANSCRIPT (ONLY ONCE)
@@ -1415,7 +1425,13 @@ async function processTurn(userText, state, twilioWs, callSettings, sessions, st
   // 🗣️ Always log what user said
   console.log(`🗣️ USER SAID: "${cleaned}"`);
   
-  if (cleaned.length < 5 || words.length < 2) return;
+  // if (cleaned.length < 5 || words.length < 2) return;
+  const shortAllowed = ["hi","hello","yes","no","yeah","okay","ok"];
+
+if (
+   cleaned.length < 3 &&
+   !shortAllowed.includes(cleaned.toLowerCase())
+) return;
 
   // ============================================================================
   // ⚠️ ESCALATION STEPS 2 & 3 MUST RUN BEFORE INTENT DETECTION
