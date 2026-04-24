@@ -3708,3 +3708,10 @@ fastify.post("/recording-status", async (req, reply) => {
     reply.send({ found: result.rows.length > 0, rows: result.rows });
   });
 }
+
+// Add at the bottom of twilio.server.js
+export {
+  preFetchAgentKnowledge,
+  aiResponse,
+  loadWorkflowByAgent,
+};
