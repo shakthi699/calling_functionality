@@ -3463,44 +3463,165 @@ state.elevenLabsSimilarityBoost = settings.elevenLabsSimilarityBoost;
     });
   });
 
-  fastify.all("/inbound-call", async (req, reply) => {
-     console.log("RAW BODY:", req.body);
-    const incomingNumber = req.body.To;
-    const fromNumber = req.body.From;
-    const callSid = req.body.CallSid;
+  // fastify.all("/inbound-call", async (req, reply) => {
+  //    console.log("RAW BODY:", req.body);
+  //   const incomingNumber = req.body.To;
+  //   const fromNumber = req.body.From;
+  //   const callSid = req.body.CallSid;
 
-    console.log("📞 Inbound call:", { to: incomingNumber, from: fromNumber });
+  //   console.log("📞 Inbound call:", { to: incomingNumber, from: fromNumber });
 
-    try {
-      const inboundSettings = await loadInboundSettingsByPhone(incomingNumber);
+  //   try {
+  //     const inboundSettings = await loadInboundSettingsByPhone(incomingNumber);
 
-      if (!inboundSettings) {
-        const vr = new Twilio.twiml.VoiceResponse();
-        vr.say("Sorry, this number is not configured.");
-        return reply.type("text/xml").send(vr.toString());
-      }
+  //     if (!inboundSettings) {
+  //       const vr = new Twilio.twiml.VoiceResponse();
+  //       vr.say("Sorry, this number is not configured.");
+  //       return reply.type("text/xml").send(vr.toString());
+  //     }
 
-      await saveCallSettings(callSettings, callSid, {
-        ...inboundSettings,
-        fromNumber,
-        toNumber: incomingNumber,
-        isInbound: true
-      });
+  //     await saveCallSettings(callSettings, callSid, {
+  //       ...inboundSettings,
+  //       fromNumber,
+  //       toNumber: incomingNumber,
+  //       isInbound: true
+  //     });
       
-      sessions.set(callSid, []);
+  //     sessions.set(callSid, []);
 
-      const vr = new Twilio.twiml.VoiceResponse();
-      const connect = vr.connect();
-      connect.stream({ url: `wss://${DOMAIN}/ws-direct` });
+  //     const vr = new Twilio.twiml.VoiceResponse();
+  //     const connect = vr.connect();
+  //     connect.stream({ url: `wss://${DOMAIN}/ws-direct` });
 
-      reply.type("text/xml").send(vr.toString());
-    } catch (error) {
-      console.error("❌ Inbound call error:", error.message);
-      const vr = new Twilio.twiml.VoiceResponse();
-      vr.say("Configuration error. Please try later.");
-      reply.type("text/xml").send(vr.toString());
-    }
+  //     reply.type("text/xml").send(vr.toString());
+  //   } catch (error) {
+  //     console.error("❌ Inbound call error:", error.message);
+  //     const vr = new Twilio.twiml.VoiceResponse();
+  //     vr.say("Configuration error. Please try later.");
+  //     reply.type("text/xml").send(vr.toString());
+  //   }
+  // });
+
+fastify.all("/inbound-call", async (req, reply) => {
+  console.log("RAW BODY:", req.body);
+
+  const incomingNumber = req.body.To;
+  const fromNumber = req.body.From;
+  const callSid = req.body.CallSid;
+
+  console.log("📞 Inbound call:", {
+    to: incomingNumber,
+    from: fromNumber,
+    callSid
   });
+
+  try {
+    const inboundSettings = await loadInboundSettingsByPhone(incomingNumber);
+
+    if (!inboundSettings) {
+      const vr = new Twilio.twiml.VoiceResponse();
+      vr.say("Sorry, this number is not configured.");
+      return reply.type("text/xml").send(vr.toString());
+    }
+
+    await saveCallSettings(callSettings, callSid, {
+      ...inboundSettings,
+      fromNumber,
+      toNumber: incomingNumber,
+      isInbound: true
+    });
+
+    sessions.set(callSid, []);
+
+    // =====================================================
+    // START RECORDING USING REST API
+    // =====================================================
+    try {
+      const twilioClient = Twilio(
+        process.env.TWILIO_ACCOUNT_SID,
+        process.env.TWILIO_AUTH_TOKEN
+      );
+
+      await twilioClient.calls(callSid).recordings.create({
+        recordingStatusCallback: `https://${DOMAIN}/recording-status`,
+        recordingStatusCallbackMethod: "POST"
+      });
+
+      console.log(`🎙️ Recording started for ${callSid}`);
+    } catch (recErr) {
+      console.error("⚠️ Recording start failed:");
+      console.error("Message:", recErr.message);
+      console.error("Code:", recErr.code);
+      console.error("Status:", recErr.status);
+    }
+
+    // =====================================================
+    // NORMAL TWIML STREAM (UNCHANGED)
+    // =====================================================
+    const vr = new Twilio.twiml.VoiceResponse();
+
+    const connect = vr.connect();
+
+    connect.stream({
+      url: `wss://${DOMAIN}/ws-direct`
+    });
+
+    return reply.type("text/xml").send(vr.toString());
+
+  } catch (error) {
+    console.error("❌ Inbound call error:", error.message);
+
+    const vr = new Twilio.twiml.VoiceResponse();
+    vr.say("Configuration error. Please try again later.");
+
+    return reply.type("text/xml").send(vr.toString());
+  }
+});
+
+
+// =====================================================
+// RECORDING CALLBACK
+// =====================================================
+fastify.post("/recording-status", async (req, reply) => {
+  try {
+    const {
+      CallSid,
+      RecordingUrl,
+      RecordingStatus
+    } = req.body;
+
+    const finalRecordingUrl = RecordingUrl
+      ? `${RecordingUrl}.mp3`
+      : null;
+
+    if (RecordingStatus === "completed") {
+
+      await db.query(`
+        INSERT INTO inbound_call_assets
+        (provider, call_sid, recording_url)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (call_sid)
+        DO UPDATE SET
+          recording_url = EXCLUDED.recording_url
+      `, [
+        "twilio",
+        CallSid,
+        finalRecordingUrl
+      ]);
+
+      console.log("💾 Recording saved in inbound_call_assets");
+    }
+
+    reply.send({ success: true });
+
+  } catch (err) {
+    console.error("❌ recording-status error:", err.message);
+    reply.send({ success: false });
+  }
+});
+
+
+
 
   fastify.post("/end-call/:callSid", async (request, reply) => {
     const { callSid } = request.params;
