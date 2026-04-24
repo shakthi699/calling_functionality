@@ -3344,10 +3344,33 @@ export async function registerTwilio(fastify, deps) {
             state.streamSid = evt.start.streamSid;
             const callSid = evt.start.callSid;
 
-            if (callSid) {
-              streamToCallMap.set(state.streamSid, callSid);
-              console.log(`✅ Mapped ${state.streamSid} → ${callSid}`);
-            }
+            // if (callSid) {
+            //   streamToCallMap.set(state.streamSid, callSid);
+            //   console.log(`✅ Mapped ${state.streamSid} → ${callSid}`);
+            // }
+
+           if (callSid) {
+  streamToCallMap.set(state.streamSid, callSid);
+  console.log(`✅ Mapped ${state.streamSid} → ${callSid}`);
+
+  // ✅ Only record inbound calls here
+  const callSettingsData = callSettings.get(callSid);
+  if (callSettingsData?.isInbound) {
+    try {
+      const twilioClient = Twilio(
+        process.env.TWILIO_ACCOUNT_SID,
+        process.env.TWILIO_AUTH_TOKEN
+      );
+      await twilioClient.calls(callSid).recordings.create({
+        recordingStatusCallback: `https://${DOMAIN}/recording-status`,
+        recordingStatusCallbackMethod: "POST"
+      });
+      console.log(`🎙️ Recording started for inbound call: ${callSid}`);
+    } catch (recErr) {
+      console.error("⚠️ Recording start failed:", recErr.message, recErr.code);
+    }
+  }
+}
 
             await connectDeepgram();
              const settings = await getCallSettings(callSettings, streamToCallMap, state.streamSid);
@@ -3502,6 +3525,82 @@ state.elevenLabsSimilarityBoost = settings.elevenLabsSimilarityBoost;
   //   }
   // });
 
+// fastify.all("/inbound-call", async (req, reply) => {
+//   console.log("RAW BODY:", req.body);
+
+//   const incomingNumber = req.body.To;
+//   const fromNumber = req.body.From;
+//   const callSid = req.body.CallSid;
+
+//   console.log("📞 Inbound call:", {
+//     to: incomingNumber,
+//     from: fromNumber,
+//     callSid
+//   });
+
+//   try {
+//     const inboundSettings = await loadInboundSettingsByPhone(incomingNumber);
+
+//     if (!inboundSettings) {
+//       const vr = new Twilio.twiml.VoiceResponse();
+//       vr.say("Sorry, this number is not configured.");
+//       return reply.type("text/xml").send(vr.toString());
+//     }
+
+//     await saveCallSettings(callSettings, callSid, {
+//       ...inboundSettings,
+//       fromNumber,
+//       toNumber: incomingNumber,
+//       isInbound: true
+//     });
+
+//     sessions.set(callSid, []);
+
+//     // =====================================================
+//     // START RECORDING USING REST API
+//     // =====================================================
+//     try {
+//       const twilioClient = Twilio(
+//         process.env.TWILIO_ACCOUNT_SID,
+//         process.env.TWILIO_AUTH_TOKEN
+//       );
+
+//       await twilioClient.calls(callSid).recordings.create({
+//         recordingStatusCallback: `https://${DOMAIN}/recording-status`,
+//         recordingStatusCallbackMethod: "POST"
+//       });
+
+//       console.log(`🎙️ Recording started for ${callSid}`);
+//     } catch (recErr) {
+//       console.error("⚠️ Recording start failed:");
+//       console.error("Message:", recErr.message);
+//       console.error("Code:", recErr.code);
+//       console.error("Status:", recErr.status);
+//     }
+
+//     // =====================================================
+//     // NORMAL TWIML STREAM (UNCHANGED)
+//     // =====================================================
+//     const vr = new Twilio.twiml.VoiceResponse();
+
+//     const connect = vr.connect();
+
+//     connect.stream({
+//       url: `wss://${DOMAIN}/ws-direct`
+//     });
+
+//     return reply.type("text/xml").send(vr.toString());
+
+//   } catch (error) {
+//     console.error("❌ Inbound call error:", error.message);
+
+//     const vr = new Twilio.twiml.VoiceResponse();
+//     vr.say("Configuration error. Please try again later.");
+
+//     return reply.type("text/xml").send(vr.toString());
+//   }
+// });
+
 fastify.all("/inbound-call", async (req, reply) => {
   console.log("RAW BODY:", req.body);
 
@@ -3532,28 +3631,6 @@ fastify.all("/inbound-call", async (req, reply) => {
     });
 
     sessions.set(callSid, []);
-
-    // =====================================================
-    // START RECORDING USING REST API
-    // =====================================================
-    try {
-      const twilioClient = Twilio(
-        process.env.TWILIO_ACCOUNT_SID,
-        process.env.TWILIO_AUTH_TOKEN
-      );
-
-      await twilioClient.calls(callSid).recordings.create({
-        recordingStatusCallback: `https://${DOMAIN}/recording-status`,
-        recordingStatusCallbackMethod: "POST"
-      });
-
-      console.log(`🎙️ Recording started for ${callSid}`);
-    } catch (recErr) {
-      console.error("⚠️ Recording start failed:");
-      console.error("Message:", recErr.message);
-      console.error("Code:", recErr.code);
-      console.error("Status:", recErr.status);
-    }
 
     // =====================================================
     // NORMAL TWIML STREAM (UNCHANGED)
