@@ -2017,11 +2017,26 @@ await speakText(fullReply, state, twilioWs, {
 
       await markAgentBusy(agent.id, callSid);
 
-      db.query(`
-        INSERT INTO call_routing_logs
-          (call_sid, routing_agent_id, agent_phone, status, escalation_email)
-        VALUES ($1, $2, $3, 'initiated', $4)
-      `, [callSid, agent.id, agent.phone_number, state.pendingEmail || null])
+   db.query(`
+  INSERT INTO call_routing_logs
+    (
+      call_sid,
+      routing_agent_id,
+      agent_phone,
+      status,
+      escalation_email,
+      agent_id,
+      agent_name
+    )
+  VALUES ($1, $2, $3, 'initiated', $4, $5, $6)
+`, [
+  callSid,
+  agent.id,
+  agent.phone_number,
+  state.pendingEmail || null,
+  settings.agentId,
+  settings.agentName
+])
       .catch(err => console.error("❌ routing log error:", err.message));
 
       clearInterval(silenceInterval);
@@ -2278,16 +2293,31 @@ Return ONLY digits. No spaces, no dashes, nothing else.`
     state.phoneAttempts = 0;
 
         try {
-        await db.query(
-          `INSERT INTO meeting_requests (call_sid, email, phone)
-           VALUES ($1, $2, $3)`,
-          [callSid, state.meetingEmail, state.meetingPhone]
-        );
+       await db.query(
+  `INSERT INTO meeting_requests
+   (
+     call_sid,
+     email,
+     phone,
+     agent_id,
+     agent_name
+   )
+   VALUES ($1, $2, $3, $4, $5)`,
+  [
+    callSid,
+    state.meetingEmail,
+    state.meetingPhone,
+    settings.agentId,
+    settings.agentName
+  ]
+);
     
         console.log("💾 Meeting saved:", {
-          email: state.meetingEmail,
-          phone: state.meetingPhone
-        });
+  email: state.meetingEmail,
+  phone: state.meetingPhone,
+  agentId: settings.agentId,
+  agentName: settings.agentName
+});
     
       } catch (err) {
         console.error("❌ DB insert error:", err.message);
