@@ -2016,6 +2016,13 @@ await speakText(fullReply, state, twilioWs, {
       }
 
       await markAgentBusy(agent.id, callSid);
+      console.log("🚨 ROUTING INSERT DEBUG:", {
+  callSid,
+  routing_agent_id: agent.id,
+  human_agent_name: agent.name,
+  ai_agent_id: settings.agentId,
+  ai_agent_name: settings.agentName
+});
 
    db.query(`
   INSERT INTO call_routing_logs
