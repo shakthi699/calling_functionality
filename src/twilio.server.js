@@ -2300,22 +2300,31 @@ Return ONLY digits. No spaces, no dashes, nothing else.`
     state.phoneAttempts = 0;
 
         try {
-       await db.query(
+ // Lookup user_id from agents table using agentId
+const agentRow = await db.query(
+  `SELECT user_id FROM agents WHERE id = $1`,
+  [settings.agentId]
+);
+const agentUserId = agentRow.rows[0]?.user_id || null;
+
+await db.query(
   `INSERT INTO meeting_requests
    (
      call_sid,
      email,
      phone,
      agent_id,
-     agent_name
+     agent_name,
+     user_id
    )
-   VALUES ($1, $2, $3, $4, $5)`,
+   VALUES ($1, $2, $3, $4, $5, $6)`,
   [
     callSid,
     state.meetingEmail,
     state.meetingPhone,
     settings.agentId,
-    settings.agentName
+    settings.agentName,
+    agentUserId
   ]
 );
     
@@ -2323,7 +2332,8 @@ Return ONLY digits. No spaces, no dashes, nothing else.`
   email: state.meetingEmail,
   phone: state.meetingPhone,
   agentId: settings.agentId,
-  agentName: settings.agentName
+  agentName: settings.agentName,
+   userId: agentUserId 
 });
     
       } catch (err) {
