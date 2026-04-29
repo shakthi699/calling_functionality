@@ -2836,11 +2836,16 @@ async function getCallSettings(callSettings, streamToCallMap, streamSid) {
 
 async function loadInboundSettingsByPhone(phoneNumber) {
   try {
-    const configResult = await db.query(`
-      SELECT * FROM inbound_configs WHERE phone_number = $1
-    `, [phoneNumber]);
+  const configResult = await db.query(
+      `SELECT * FROM inbound_configs WHERE phone_number = $1`,  // ← no status filter here anymore
+      [phoneNumber]
+    );
 
     if (!configResult.rows.length) return null;
+
+     if (configResult.rows[0].status !== 'active') {
+      return { inactive: true }; // special flag
+    }
 
     const config = configResult.rows[0];
     const agentResult = await db.query(`
@@ -3669,6 +3674,12 @@ fastify.all("/inbound-call", async (req, reply) => {
       vr.say("Sorry, this number is not configured.");
       return reply.type("text/xml").send(vr.toString());
     }
+
+     if (inboundSettings.inactive) {
+    const vr = new Twilio.twiml.VoiceResponse();
+    vr.say("This number is currently inactive. Please contact support for assistance. Goodbye.");
+    return reply.type("text/xml").send(vr.toString());
+  }
 
     await saveCallSettings(callSettings, callSid, {
       ...inboundSettings,
