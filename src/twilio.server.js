@@ -64,7 +64,7 @@ const INDIAN_LANGUAGES = {
 };
 
 
-const SARVAM_LANGS = ["kn", "te", "mr", "gu", "bn", "ml", "pa","ta","hi","en"];
+const SARVAM_LANGS = ["kn", "te", "mr", "gu", "bn", "ml", "pa","ta"];
 
 function shouldUseSarvam(languageCode) {
   if (!languageCode) return false;
@@ -336,281 +336,116 @@ class SarvamTTS {
 }
 }
 
-// =============================================================================
-// ELEVENLABS TTS (GLOBAL LANGUAGES)
-// =============================================================================
 
-// class ElevenLabsTTS {
-//   constructor(apiKey) {
-//     if (!apiKey) throw new Error("ELEVENLABS_API_KEY missing");
-//     this.apiKey = apiKey;
-//     this.baseUrl = "https://api.elevenlabs.io/v1";
-//   }
-
-//   async generateAndStream(text, options = {}, twilioWs, state) {
-//     if (!text?.trim() || state.interrupted || state.callEnded) return 0;
-
-//     const voiceId = options.voiceId || "FGY2WhTYpPnrIDTdsKH5";
-//     const speed = options.speed ?? 1.2;
-//     const stability = options.stability ?? 1.0;
-//     const similarityBoost = options.similarityBoost ?? 1.0;
-
-//     try {
-//       console.log(`✅ ElevenLabs Config: voice=${voiceId}, speed=${speed}`);
-
-//       const response = await fetch(`${this.baseUrl}/text-to-speech/${voiceId}/stream`, {
-//         method: 'POST',
-//         headers: {
-//           'Accept': 'audio/mpeg',
-//           'Content-Type': 'application/json',
-//           'xi-api-key': this.apiKey
-//         },
-//         body: JSON.stringify({
-//           text: text,
-//           model_id: "eleven_turbo_v2_5",
-//           voice_settings: {
-//             stability: stability,
-//             similarity_boost: similarityBoost,
-//             speed: speed
-//           }
-//         })
-//       });
-
-//       // if (!response.ok) {
-//       //   throw new Error(`ElevenLabs API error: ${response.status}`);
-//       // }
-//       if (!response.ok) {
-//   let rawBody = "";
-//   let jsonBody = null;
-
-//   try {
-//     rawBody = await response.text();
-//     try {
-//       jsonBody = JSON.parse(rawBody);
-//     } catch (_) {}
-//   } catch (_) {}
-
-//   console.error("❌ ElevenLabs API ERROR (FULL DUMP)");
-//   console.error("Status:", response.status);
-//   console.error("Status Text:", response.statusText);
-//   console.error("URL:", response.url);
-//   console.error("Headers:", Object.fromEntries(response.headers.entries()));
-//   console.error("Raw Body:", rawBody);
-//   if (jsonBody) console.error("Parsed JSON:", jsonBody);
-
-//   // IMPORTANT: throw AFTER logging
-//   throw new Error(`ElevenLabs API error ${response.status}`);
-// }
-
-
-//       const reader = response.body.getReader();
-//       let totalBytes = 0;
-//       let audioBuffer = Buffer.alloc(0);
-
-//       while (true) {
-//         const { done, value } = await reader.read();
-        
-//         if (done || state.interrupted || state.callEnded) break;
-
-//         if (value) {
-//           audioBuffer = Buffer.concat([audioBuffer, Buffer.from(value)]);
-
-//           // Process in chunks
-//           while (audioBuffer.length >= 4096) {
-//             const chunk = audioBuffer.slice(0, 4096);
-//             audioBuffer = audioBuffer.slice(4096);
-
-//             try {
-//               const pcm = await mp3Base64ToPcm(chunk.toString('base64'));
-//               const mulaw = linear16ToMulaw(pcm);
-
-//               if (!state.interrupted && !state.callEnded && twilioWs.readyState === WebSocket.OPEN) {
-//                 twilioWs.send(JSON.stringify({
-//                   event: "media",
-//                   streamSid: state.streamSid,
-//                   media: {
-//                     track: "outbound",
-//                     payload: mulaw.toString("base64")
-//                   }
-//                 }));
-//                 totalBytes += mulaw.length;
-//               }
-//             } catch (e) {
-//               console.error("[ElevenLabs conversion error]", e.message);
-//             }
-//           }
-//         }
-//       }
-
-//       // Process remaining buffer
-//       if (audioBuffer.length > 0 && !state.interrupted && !state.callEnded) {
-//         try {
-//           const pcm = await mp3Base64ToPcm(audioBuffer.toString('base64'));
-//           const mulaw = linear16ToMulaw(pcm);
-
-//           if (twilioWs.readyState === WebSocket.OPEN) {
-//             twilioWs.send(JSON.stringify({
-//               event: "media",
-//               streamSid: state.streamSid,
-//               media: {
-//                 track: "outbound",
-//                 payload: mulaw.toString("base64")
-//               }
-//             }));
-//             totalBytes += mulaw.length;
-//           }
-//         } catch (e) {
-//           console.error("[ElevenLabs final chunk error]", e.message);
-//         }
-//       }
-
-//       return totalBytes;
-//     } catch (error) {
-//       // console.error("[ElevenLabs TTS] Error:", error.message);
-//       // return 0;
-//        console.error("🔥 [ElevenLabs TTS] Fatal Error");
-//   console.error("Message:", error.message);
-//   console.error("Stack:", error.stack);
-//   return 0;
-//     }
-//   }
-// }
 
 class ElevenLabsTTS {
   constructor(apiKey) {
     if (!apiKey) throw new Error("ELEVENLABS_API_KEY missing");
     this.apiKey = apiKey;
-    this.baseUrl = "https://api.elevenlabs.io/v1";
   }
 
   async generateAndStream(text, options = {}, twilioWs, state) {
     if (!text?.trim() || state.interrupted || state.callEnded) return 0;
 
     const voiceId = options.voiceId || "FGY2WhTYpPnrIDTdsKH5";
-    const speed = options.speed ?? 1.2;
-    const stability = options.stability ?? 1.0;
-    const similarityBoost = options.similarityBoost ?? 1.0;
+    const speed   = options.speed    ?? 1.2;
 
-    try {
-      console.log(`✅ ElevenLabs Config: voice=${voiceId}, speed=${speed}`);
+    return new Promise((resolve) => {
+      let totalBytes = 0;
+      let resolved   = false;
 
-      const response = await fetch(
-        // ✅ Use PCM output directly — no MP3 decode needed!
-        `${this.baseUrl}/text-to-speech/${voiceId}/stream?output_format=pcm_8000`,
-        {
-          method: "POST",
-          headers: {
-            Accept: "audio/wav",
-            "Content-Type": "application/json",
-            "xi-api-key": this.apiKey,
-          },
-          body: JSON.stringify({
-            text: text,
-            model_id: "eleven_turbo_v2_5",
-            voice_settings: {
-              stability: stability,
-              similarity_boost: similarityBoost,
-              speed: speed,
-            },
-          }),
-           signal: options.signal 
-        }
+      const done = () => {
+        if (resolved) return;
+        resolved = true;
+        resolve(totalBytes);
+      };
+
+      const ws = new WebSocket(
+        `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input` +
+        `?model_id=eleven_turbo_v2_5` +
+        `&output_format=ulaw_8000` +        // ✅ native mulaw — no conversion needed
+        `&optimize_streaming_latency=4`,
+        { headers: { "xi-api-key": this.apiKey } }
       );
 
-      if (!response.ok) {
-        let rawBody = "";
-        try { rawBody = await response.text(); } catch (_) {}
-        console.error("❌ ElevenLabs API ERROR");
-        console.error("Status:", response.status, response.statusText);
-        console.error("Body:", rawBody);
-        throw new Error(`ElevenLabs API error ${response.status}: ${rawBody}`);
-      }
-      console.time("TTS_FIRST_BYTE");
-      const reader = response.body.getReader();
-      let totalBytes = 0;
+      const timeout = setTimeout(() => {
+        console.error("[ElevenLabs WS] Timed out");
+        try { ws.close(); } catch (_) {}
+        done();
+      }, 20_000);
 
-      // ✅ PCM comes in as raw 16-bit LE at 8000 Hz — matches what Twilio needs
-      // Just accumulate and convert to mulaw, no ffmpeg required
-      let pcmBuffer = Buffer.alloc(0);
-      const CHUNK_SAMPLES = 160; // 20ms of audio at 8000 Hz
-      const CHUNK_BYTES = CHUNK_SAMPLES * 2; // 16-bit = 2 bytes per sample
+      ws.on("open", () => {
+        console.log(`✅ ElevenLabs WS: voice=${voiceId}, speed=${speed}`);
 
-      while (true) {
-        if (state.interrupted) {
-  console.log("🛑 HARD STOP TTS LOOP");
-  break;
-}
-        const { done, value } = await reader.read();
+        // 1️⃣ BOS — voice config
+        ws.send(JSON.stringify({
+          text: " ",
+          voice_settings: {
+            stability:        options.stability        ?? 1.0,
+            similarity_boost: options.similarityBoost  ?? 1.0,
+            speed,
+          },
+          generation_config: {
+            chunk_length_schedule: [120, 160, 250, 290],
+          },
+          xi_api_key: this.apiKey,
+        }));
 
+        // 2️⃣ Actual text
+        ws.send(JSON.stringify({ text: text.trim() + " " }));
+
+        // 3️⃣ EOS flush
+        ws.send(JSON.stringify({ text: "" }));
+      });
+
+      ws.on("message", (raw) => {
         if (state.interrupted || state.callEnded) {
-          console.log("[ElevenLabs] Interrupted, stopping stream");
-          break;
+          clearTimeout(timeout);
+          try { ws.close(); } catch (_) {}
+          done();
+          return;
         }
 
-        if (value) {
-          pcmBuffer = Buffer.concat([pcmBuffer, Buffer.from(value)]);
+        let msg;
+        try { msg = JSON.parse(raw.toString()); }
+        catch (_) { return; }
 
-          // ✅ Send complete 20ms PCM frames as mulaw to Twilio
-          while (pcmBuffer.length >= CHUNK_BYTES) {
-            const frame = pcmBuffer.slice(0, CHUNK_BYTES);
-            pcmBuffer = pcmBuffer.slice(CHUNK_BYTES);
-
-            const mulaw = linear16ToMulaw(frame);
-
-            if (
-              !state.interrupted &&
-              !state.callEnded &&
-              twilioWs.readyState === WebSocket.OPEN
-            ) {
-              twilioWs.send(
-                JSON.stringify({
-                  event: "media",
-                  streamSid: state.streamSid,
-                  media: {
-                    track: "outbound",
-                    payload: mulaw.toString("base64"),
-                  },
-                })
-              );
-              totalBytes += mulaw.length;
-            }
+        // ── audio chunk ──────────────────────────────────────────────────
+        if (msg.audio && twilioWs.readyState === WebSocket.OPEN) {
+          try {
+            twilioWs.send(JSON.stringify({
+              event:     "media",
+              streamSid: state.streamSid,
+              media: {
+                track:   "outbound",
+                payload: msg.audio,   // ✅ already base64 mulaw — send directly
+              },
+            }));
+            totalBytes += Buffer.from(msg.audio, "base64").length;
+          } catch (e) {
+            console.error("[ElevenLabs WS] send error:", e.message);
           }
         }
 
-        if (done) break;
-      }
-
-      // ✅ Flush remaining PCM (last partial frame)
-      if (
-        pcmBuffer.length > 0 &&
-        !state.interrupted &&
-        !state.callEnded &&
-        twilioWs.readyState === WebSocket.OPEN
-      ) {
-        // Pad to even number of bytes if needed
-        if (pcmBuffer.length % 2 !== 0) {
-          pcmBuffer = Buffer.concat([pcmBuffer, Buffer.alloc(1)]);
+        // ── generation complete ──────────────────────────────────────────
+        if (msg.isFinal) {
+          clearTimeout(timeout);
+          try { ws.close(); } catch (_) {}
+          done();
         }
-        const mulaw = linear16ToMulaw(pcmBuffer);
-        twilioWs.send(
-          JSON.stringify({
-            event: "media",
-            streamSid: state.streamSid,
-            media: {
-              track: "outbound",
-              payload: mulaw.toString("base64"),
-            },
-          })
-        );
-        totalBytes += mulaw.length;
-      }
+      });
 
-      return totalBytes;
-    } catch (error) {
-      console.error("🔥 [ElevenLabs TTS] Fatal Error:", error.message);
-      console.error("Stack:", error.stack);
-      return 0;
-    }
+      ws.on("error", (err) => {
+        console.error("[ElevenLabs WS] error:", err.message);
+        clearTimeout(timeout);
+        done();
+      });
+
+      ws.on("close", () => {
+        clearTimeout(timeout);
+        done();
+      });
+    });
   }
 }
 
