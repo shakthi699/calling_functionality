@@ -64,7 +64,7 @@ const INDIAN_LANGUAGES = {
 };
 
 
-const SARVAM_LANGS = ["kn", "te", "mr", "gu", "bn", "ml", "pa"];
+const SARVAM_LANGS = ["kn", "te", "mr", "gu", "bn", "ml", "pa","en"];
 
 function shouldUseSarvam(languageCode) {
   if (!languageCode) return false;
@@ -1482,11 +1482,31 @@ Examples:
         state,
         twilioWs,
         {
-          transcriberLanguage: state.transcriberLanguage,
-          languageCode: state.transcriberLanguage,
-          sarvamVoice: state.sarvamVoice,
-          pace: 1.15
-        }
+  transcriberLanguage: state.transcriberLanguage,
+  languageCode: state.transcriberLanguage,
+
+  // Sarvam
+  sarvamVoice: settings.sarvamVoice || state.sarvamVoice,
+
+  // ElevenLabs
+  elevenLabsVoiceId:
+    settings.elevenLabsVoiceId || state.elevenLabsVoiceId,
+
+  elevenLabsSpeed:
+    settings.elevenLabsSpeed ?? state.elevenLabsSpeed ?? 1.2,
+
+  elevenLabsStability:
+    settings.elevenLabsStability ??
+    state.elevenLabsStability ??
+    1.0,
+
+  elevenLabsSimilarityBoost:
+    settings.elevenLabsSimilarityBoost ??
+    state.elevenLabsSimilarityBoost ??
+    1.0,
+
+  pace: 1.15
+}
       );
 
     } else {
@@ -1496,10 +1516,31 @@ Examples:
         state,
         twilioWs,
         {
-          transcriberLanguage: state.transcriberLanguage,
-          languageCode: state.transcriberLanguage,
-          sarvamVoice: state.sarvamVoice
-        }
+  transcriberLanguage: state.transcriberLanguage,
+  languageCode: state.transcriberLanguage,
+
+  // Sarvam
+  sarvamVoice: settings.sarvamVoice || state.sarvamVoice,
+
+  // ElevenLabs
+  elevenLabsVoiceId:
+    settings.elevenLabsVoiceId || state.elevenLabsVoiceId,
+
+  elevenLabsSpeed:
+    settings.elevenLabsSpeed ?? state.elevenLabsSpeed ?? 1.2,
+
+  elevenLabsStability:
+    settings.elevenLabsStability ??
+    state.elevenLabsStability ??
+    1.0,
+
+  elevenLabsSimilarityBoost:
+    settings.elevenLabsSimilarityBoost ??
+    state.elevenLabsSimilarityBoost ??
+    1.0,
+
+  pace: 1.15
+}
       );
     }
 
@@ -1550,11 +1591,32 @@ Examples:
         `Thank you. Our support team will contact you shortly at ${confirmedEmail}.`,
         state,
         twilioWs,
-        {
-          transcriberLanguage: state.transcriberLanguage,
-          languageCode: state.transcriberLanguage,
-          sarvamVoice: state.sarvamVoice
-        }
+       {
+  transcriberLanguage: state.transcriberLanguage,
+  languageCode: state.transcriberLanguage,
+
+  // Sarvam
+  sarvamVoice: settings.sarvamVoice || state.sarvamVoice,
+
+  // ElevenLabs
+  elevenLabsVoiceId:
+    settings.elevenLabsVoiceId || state.elevenLabsVoiceId,
+
+  elevenLabsSpeed:
+    settings.elevenLabsSpeed ?? state.elevenLabsSpeed ?? 1.2,
+
+  elevenLabsStability:
+    settings.elevenLabsStability ??
+    state.elevenLabsStability ??
+    1.0,
+
+  elevenLabsSimilarityBoost:
+    settings.elevenLabsSimilarityBoost ??
+    state.elevenLabsSimilarityBoost ??
+    1.0,
+
+  pace: 1.15
+}
       ).catch(err => console.error("speakText error:", err.message));
 
       // Fire-and-forget DB update in background
@@ -1584,11 +1646,32 @@ Examples:
         "Sorry about that. Could you repeat your email slowly?",
         state,
         twilioWs,
-        {
-          transcriberLanguage: state.transcriberLanguage,
-          languageCode: state.transcriberLanguage,
-          sarvamVoice: state.sarvamVoice
-        }
+       {
+  transcriberLanguage: state.transcriberLanguage,
+  languageCode: state.transcriberLanguage,
+
+  // Sarvam
+  sarvamVoice: settings.sarvamVoice || state.sarvamVoice,
+
+  // ElevenLabs
+  elevenLabsVoiceId:
+    settings.elevenLabsVoiceId || state.elevenLabsVoiceId,
+
+  elevenLabsSpeed:
+    settings.elevenLabsSpeed ?? state.elevenLabsSpeed ?? 1.2,
+
+  elevenLabsStability:
+    settings.elevenLabsStability ??
+    state.elevenLabsStability ??
+    1.0,
+
+  elevenLabsSimilarityBoost:
+    settings.elevenLabsSimilarityBoost ??
+    state.elevenLabsSimilarityBoost ??
+    1.0,
+
+  pace: 1.15
+}
       );
 
       return;
