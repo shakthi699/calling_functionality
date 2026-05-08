@@ -64,7 +64,7 @@ const INDIAN_LANGUAGES = {
 };
 
 
-const SARVAM_LANGS = ["kn", "te", "mr", "gu", "bn", "ml", "pa","ta"];
+const SARVAM_LANGS = ["kn", "te", "mr", "gu", "bn", "ml", "pa"];
 
 function shouldUseSarvam(languageCode) {
   if (!languageCode) return false;
@@ -589,6 +589,106 @@ class DeepgramSTT {
       this.ready = false;
     }
   }
+}
+
+
+// =============================================================================
+// FILLER VOICE SYSTEM (Vapi-style)
+// =============================================================================
+const FILLERS = {
+  default: ["Hmm...", "Mmm...", "Uhh...", "Ahh...", "Mm-hmm..."],
+  
+  // Indian languages — also clean up words that imply agreement
+  "kn": ["ಹ್ಮ್.", "ಆಹ್.", "ಉಮ್..."],
+  "hi": ["हम्म.", "उम्...", "अच्छा..."],
+  "ta": ["ஹும்.", "உம்...", "ஆம்..."],
+  "te": ["హా.", "ఉమ్...", "హమ్మ్..."],
+  "mr": ["हम्म.", "उम्...", "आहा..."],
+  "bn": ["হুম.", "উম্...", "আহা..."],
+  "ml": ["ഹും.", "ഉം...", "ആഹ..."],
+  "gu": ["હમ્મ.", "ઉમ્...", "આહ..."],
+  "pa": ["ਹਮ੍ਮ.", "ਉਮ੍...", "ਆਹ..."],
+};
+function getFillerText(languageCode, userText = "") {
+  const base = (languageCode || "").toLowerCase().split("-")[0];
+
+  // Indian language fillers (unchanged)
+  if (FILLERS[base]) {
+    const pool = FILLERS[base];
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+
+  // English — only neutral thinking sounds, no words that imply an answer
+  const neutralSounds = [
+    "Hmm...",
+    "Mmm...",
+    "Uhh...",
+    "Ahh...",
+    "Mm-hmm...",
+  ];
+
+  return neutralSounds[Math.floor(Math.random() * neutralSounds.length)];
+}
+
+async function playFiller(state, twilioWs, ttsOptions = {}) {
+  if (state.botSpeaking || state.callEnded || state.fillerPlaying) return () => {};
+
+  const userText = ttsOptions._userText || "";
+  const wordCount = userText.split(/\s+/).filter(Boolean).length;
+
+  // ← SKIP filler entirely for short acknowledgements like "Okay", "I got it", "Yeah"
+  const shortAcks = ["okay", "ok", "yeah", "yes", "no", "sure", "great", 
+                     "alright", "got it", "i see", "hmm", "fine", "good",
+                     "that's great", "that's greater here", "excellent"];
+  
+  const lower = userText.toLowerCase().trim();
+  if (wordCount <= 3 || shortAcks.some(ack => lower.includes(ack))) {
+    return () => {};  // ← silent skip, no filler at all
+  }
+
+  const text = getFillerText(ttsOptions.languageCode || state.transcriberLanguage);
+
+  let cancelled = false;
+  let fillerStarted = false;
+  let fillerTimer = null;
+
+  const cancel = () => {
+    cancelled = true;
+    if (fillerTimer) {
+      clearTimeout(fillerTimer);
+      fillerTimer = null;
+    }
+    if (fillerStarted && state.fillerPlaying) {
+      state.fillerPlaying = false;
+      state.fillerCancelled = true;
+      sendClearEvent(twilioWs, state.streamSid);
+    }
+  };
+
+  // Only play filler for genuine questions (5+ words) with a high delay
+  const fillerDelay = wordCount >= 8 ? 800 : 1000;
+
+  fillerTimer = setTimeout(() => {
+    if (cancelled || state.botSpeaking || state.callEnded) return;
+
+    fillerStarted = true;
+    state.fillerPlaying = true;
+    state.fillerCancelled = false;
+
+    console.log(`🔈 Filler (delayed): "${text}"`);
+
+    ttsManager.generateAndStream(
+      text,
+      { ...ttsOptions, signal: undefined },
+      twilioWs,
+      { ...state, interrupted: false }
+    ).finally(() => {
+      state.fillerPlaying = false;
+    });
+
+  }, fillerDelay);
+
+  return cancel;
 }
 
 // =============================================================================
@@ -2378,59 +2478,11 @@ const ttsOpts = {
     pace: 1.15,
   };
 
-//   let fullBotReply = "";
+ const cancelFiller = await playFiller(state, twilioWs, { 
+    ...ttsOpts, 
+    _userText: cleaned   // ← ADD THIS
+  });
 
-// try {
-//   const stream = await openai.chat.completions.create({
-//     model: settings.aiModel || "gpt-4o-mini",
-//     temperature: settings.temperature ?? 0.7,
-//     max_tokens: 100,
-//     messages,
-//     stream: true,
-//   });
-
-//   for await (const chunk of stream) {
-//     if (state.interrupted || state.callEnded) break;
-
-//     const token = chunk.choices?.[0]?.delta?.content ?? "";
-//     if (!token) continue;
-
-//     const clean = token
-//       .replace(/^(\s*[-*+]|\s*\d+\.)\s+/g, "")
-//       .replace(/[*_~`>#]/g, "")
-//       .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-
-//     fullBotReply += clean;
-//   }
-
-// } catch (err) {
-//   console.error("[LLM stream error]", err.message);
-//   fullBotReply = "Sorry, could you repeat that?";
-// }
-
-// if (state.interrupted) {
-//   state.interrupted = false;
-//   return;
-// }
-
-// fullBotReply = fullBotReply.trim();
-// if (!fullBotReply || fullBotReply.length < 5) {
-//   fullBotReply = "Could you say more about that?";
-// }
-
-// state.lastUserActivity = Date.now();
-
-// console.log("🤖 AI RESPONSE", {
-//   callSid,
-//   streamSid,
-//   text: fullBotReply.slice(0, 500),
-//   ts: new Date().toISOString(),
-// });
-
-// await speakText(fullBotReply, state, twilioWs, ttsOpts);
-
-// REPLACE WITH:
-// REPLACE WITH:
 let fullBotReply = "";
 
 try {
@@ -2461,6 +2513,16 @@ try {
   fullBotReply = "Sorry, could you repeat that?";
 }
 
+// 🔥 LLM done — stop filler before plmaying real reply
+cancelFiller();
+// Small gap so clear event lands before TTS starts
+if (state.fillerPlaying) {
+  sendClearEvent(twilioWs, state.streamSid);
+  await new Promise(r => setTimeout(r, 120)); // let clear propagate
+}
+
+
+
 if (state.interrupted) {
   state.interrupted = false;
   return;
@@ -2470,6 +2532,8 @@ fullBotReply = fullBotReply.trim();
 if (!fullBotReply || fullBotReply.length < 5) {
   fullBotReply = "Could you say more about that?";
 }
+
+
 
 state.lastUserActivity = Date.now();
 
@@ -3149,6 +3213,8 @@ export async function registerTwilio(fastify, deps) {
         meetingPhone: null,
          phoneBuffer: null,
         phoneAttempts: 0,
+         fillerPlaying: false,
+         fillerCancelled: false,
       };
 
       const connectDeepgram = async () => {
