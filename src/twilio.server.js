@@ -362,7 +362,7 @@ class ElevenLabsTTS {
 
       const ws = new WebSocket(
         `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input` +
-        `?model_id=eleven_turbo_v2_5` +
+        `?model_id=eleven_flash_v2_5` +
         `&output_format=ulaw_8000` +        // ✅ native mulaw — no conversion needed
         `&optimize_streaming_latency=4`,
         { headers: { "xi-api-key": this.apiKey } }
@@ -381,12 +381,12 @@ class ElevenLabsTTS {
         ws.send(JSON.stringify({
           text: " ",
           voice_settings: {
-            stability:        options.stability        ?? 1.0,
-            similarity_boost: options.similarityBoost  ?? 1.0,
+            stability:        options.stability        ?? 0.5,
+            similarity_boost: options.similarityBoost  ?? 0.8,
             speed,
           },
           generation_config: {
-            chunk_length_schedule: [120, 160, 250, 290],
+            chunk_length_schedule: [50, 120, 160, 250],
           },
           xi_api_key: this.apiKey,
         }));
