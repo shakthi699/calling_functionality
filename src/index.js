@@ -291,11 +291,12 @@ fastify.register(async function (fastify) {
               firstMessage:
                 firstMessage ||
                 "Hello, how can I help you today?",
+                 language: language || "en", 
               extractedVariables: {},
               workflow: null,
               currentNodeId: null,
               knowledgeChunks: [],
-
+              
               /* ✅ duplicate guards */
               lastPrompt: "",
               lastPromptTime: 0,
@@ -412,8 +413,23 @@ fastify.register(async function (fastify) {
                 (n) => n.id === currentNodeId
               );
 
-        let dynamicPrompt = `
+      const langMap = {
+  "kn": "Kannada", "kn-IN": "Kannada",
+  "hi": "Hindi",   "hi-IN": "Hindi",
+  "ta": "Tamil",   "ta-IN": "Tamil",
+  "te": "Telugu",  "te-IN": "Telugu",
+  "ml": "Malayalam","ml-IN": "Malayalam",
+  "mr": "Marathi", "mr-IN": "Marathi",
+  "en": "English", "en-IN": "English",
+};
+const langName = langMap[settings.language] || settings.language;
+
+let dynamicPrompt = `
 ${settings.systemPrompt}
+
+LANGUAGE INSTRUCTION: You MUST respond ONLY in ${langName}. 
+Do NOT switch to English unless the user explicitly speaks in English.
+All your replies must be in ${langName}.
 
 You are a phone AI assistant with access to a knowledge base.
 
@@ -572,6 +588,8 @@ Conversation Rules:
 
             break;
           }
+
+          
 
           /* ---------------------------------- */
           /* END */
