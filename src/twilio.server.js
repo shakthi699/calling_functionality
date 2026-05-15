@@ -724,13 +724,26 @@ async function playFiller(state, twilioWs, ttsOptions = {}) {
 
 async function aiResponse(messages, model, temperature, maxTokens, onPartial) {
   try {
-    const stream = await openai.chat.completions.create({
-      model,
-      temperature,
-      max_tokens: maxTokens,
-      messages,
-      stream: true,
-    });
+    const requestConfig = {
+  model,
+  messages,
+  stream: true,
+};
+
+if (model.startsWith("gpt-5")) {
+
+  requestConfig.max_completion_tokens = maxTokens;
+  requestConfig.reasoning_effort = "low";
+
+} else {
+
+  requestConfig.temperature = temperature;
+  requestConfig.max_tokens = maxTokens;
+}
+
+const stream = await openai.chat.completions.create(
+  requestConfig
+);
 
     let fullMessage = "";
     let partial = "";
@@ -2885,13 +2898,31 @@ const ttsOpts = {
 let fullBotReply = "";
 
 try {
-  const stream = await openai.chat.completions.create({
-    model: settings.aiModel || "gpt-4o-mini",
-    temperature: settings.temperature ?? 0.7,
-    max_tokens: 100,
-    messages,
-    stream: true,
-  });
+const model = settings.aiModel || "gpt-4o-mini";
+
+const requestConfig = {
+  model,
+  messages,
+  stream: true,
+};
+
+if (model.startsWith("gpt-5")) {
+
+  requestConfig.max_completion_tokens = 500;
+  requestConfig.reasoning_effort = "low";
+
+} else {
+
+  requestConfig.temperature =
+    settings.temperature ?? 0.7;
+
+  requestConfig.max_tokens = 100;
+}
+
+const stream =
+  await openai.chat.completions.create(
+    requestConfig
+  );
 
   for await (const chunk of stream) {
     if (state.interrupted || state.callEnded) break;
