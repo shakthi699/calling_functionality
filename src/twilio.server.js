@@ -364,7 +364,7 @@ class ElevenLabsTTS {
         `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input` +
         `?model_id=eleven_flash_v2_5` +
         `&output_format=ulaw_8000` +        // ✅ native mulaw — no conversion needed
-        `&optimize_streaming_latency=4`,
+        `&optimize_streaming_latency=2`,
         { headers: { "xi-api-key": this.apiKey } }
       );
 
@@ -381,7 +381,7 @@ class ElevenLabsTTS {
         ws.send(JSON.stringify({
           text: " ",
           voice_settings: {
-            stability:        options.stability        ?? 0.5,
+            stability:        options.stability        ?? 0.4,
             similarity_boost: options.similarityBoost  ?? 0.8,
             speed,
           },
@@ -896,6 +896,64 @@ async function getRelevantChunks(userText, agentId, preloadedChunks, topK = 3) {
 // =============================================================================
 // CALENDAR FUNCTIONS (keeping existing implementation)
 // =============================================================================
+async function createGoogleCalendarEvent({
+  accessToken,
+  email,
+  datetime,
+  purpose,
+  timezone
+}) {
+
+  const start = new Date(datetime);
+
+  const end = new Date(start.getTime() + 30 * 60000);
+
+  const response = await fetch(
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events?conferenceDataVersion=1",
+    {
+      method: "POST",
+
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json"
+      },
+
+      body: JSON.stringify({
+        summary: purpose || "AI Scheduled Meeting",
+
+        start: {
+          dateTime: start.toISOString(),
+          timeZone: timezone || "Asia/Kolkata"
+        },
+
+        end: {
+          dateTime: end.toISOString(),
+          timeZone: timezone || "Asia/Kolkata"
+        },
+
+        attendees: [
+          { email }
+        ],
+
+        conferenceData: {
+          createRequest: {
+            requestId: `meet-${Date.now()}`,
+            conferenceSolutionKey: {
+              type: "hangoutsMeet"
+            }
+          }
+        }
+      })
+    }
+  );
+
+  const data = await response.json();
+
+  console.log("✅ GOOGLE EVENT CREATED:", data);
+
+  return data;
+}
+
 
 function detectCustomerTimezone(location) {
   const locationTimezones = {
@@ -976,36 +1034,33 @@ function formatTimeInTimezone(utcDatetime, timezone) {
 
 async function getAgentCalendarConfig(agentId) {
   try {
-    const response = await fetch(`${API_BASE_URL}/${agentId}/calendar-config`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      }
-    });
-
-    if (!response.ok) {
-      if (response.status === 404) return null;
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
-    const data = await response.json();
+    // First get the user_id for this agent
+    const agentRow = await db.query(
+      `SELECT user_id FROM agents WHERE id = $1`,
+      [agentId]
+    );
     
-    if (data && data.agent_id) {
-      const effectiveTimezone = data.calendar_timezone || data.agent_timezone || 'UTC';
-      return {
-        agent_id: data.agent_id,
-        agent_name: data.name,
-        calendar_provider: data.provider,
-        calendar_access_token: data.access_token,
-        calendar_refresh_token: data.refresh_token,
-        calendar_email: data.email,
-        effective_timezone: effectiveTimezone,
-        user_id: data.user_id,
-      };
-    }
+    if (!agentRow.rows.length) return null;
+    const userId = agentRow.rows[0].user_id;
 
-    return null;
+    // Then look up calendar_preferences by user_id
+    const calRow = await db.query(
+      `SELECT * FROM calendar_preferences WHERE user_id = $1 LIMIT 1`,
+      [userId]
+    );
+
+    if (!calRow.rows.length) return null;
+
+    const cal = calRow.rows[0];
+    return {
+      agent_id: agentId,
+      calendar_provider: cal.provider,
+      calendar_access_token: cal.access_token,
+      calendar_refresh_token: cal.refresh_token,
+      calendar_email: cal.email,
+      effective_timezone: 'Asia/Kolkata',
+      user_id: userId,
+    };
   } catch (error) {
     console.error("Error fetching calendar config:", error.message);
     return null;
@@ -1254,6 +1309,21 @@ async function handleScheduleMeeting(parameters, callSid, settings) {
       agentId: settings.agentId,
       meetingId: `meeting_${Date.now()}`
     }, settings.calendarConfig);
+
+    console.log("📅 calendarConfig check:", {
+  exists: !!settings.calendarConfig,
+  hasToken: !!settings.calendarConfig?.calendar_access_token,
+  tokenLength: settings.calendarConfig?.calendar_access_token?.length,
+  provider: settings.calendarConfig?.calendar_provider
+});
+
+    await createGoogleCalendarEvent({
+  accessToken: settings.calendarConfig.calendar_access_token,
+  email,
+  datetime: formattedDatetime,
+  purpose,
+  timezone: detectedCustomerTimezone
+});
 
     const customerTime = formatTimeInTimezone(meetingDateUTC.toJSDate(), detectedCustomerTimezone);
 
@@ -2317,56 +2387,17 @@ Return ONLY digits. No spaces, no dashes, nothing else.`
     state.phoneBuffer = null;
     state.phoneAttempts = 0;
 
-        try {
- // Lookup user_id from agents table using agentId
-const agentRow = await db.query(
-  `SELECT user_id FROM agents WHERE id = $1`,
-  [settings.agentId]
-);
-const agentUserId = agentRow.rows[0]?.user_id || null;
-
-await db.query(
-  `INSERT INTO meeting_requests
-   (
-     call_sid,
-     email,
-     phone,
-     agent_id,
-     agent_name,
-     user_id
-   )
-   VALUES ($1, $2, $3, $4, $5, $6)`,
-  [
-    callSid,
-    state.meetingEmail,
-    state.meetingPhone,
-    settings.agentId,
-    settings.agentName,
-    agentUserId
-  ]
-);
     
-        console.log("💾 Meeting saved:", {
-  email: state.meetingEmail,
-  phone: state.meetingPhone,
-  agentId: settings.agentId,
-  agentName: settings.agentName,
-   userId: agentUserId 
-});
-    
-      } catch (err) {
-        console.error("❌ DB insert error:", err.message);
-      }
 
-    console.log("📅 Meeting details collected:", {
-      email: state.meetingEmail,
-      phone: state.meetingPhone
-    });
+    console.log("📅 Meeting phone collected, asking for datetime");
 
     const readableNumber = finalPhone.split("").join(" ");
 
+    // ✅ Move to datetime collection — do NOT save to DB yet
+    state.awaitingMeetingDateTime = true;
+
     await speakText(
-      `Thank you. I've noted your number as ${readableNumber}. Our team will contact you soon. Is there anything else I can help you with?`,
+      `Got it, ${readableNumber}. What date and time would you like to schedule the meeting? For example, tomorrow at 3 PM or Monday at 10 AM.`,
       state,
       twilioWs,
       {
@@ -2382,8 +2413,7 @@ await db.query(
       }
     );
 
-    state.meetingEmail = null;
-    state.meetingPhone = null;
+    // ✅ Do NOT clear meetingEmail/meetingPhone here — needed for DB insert later
 
   } else if (state.phoneBuffer.length > 0 && state.phoneBuffer.length < 10) {
 
@@ -2423,6 +2453,292 @@ await db.query(
         languageCode: state.transcriberLanguage,
         sarvamVoice: state.sarvamVoice,
         voice: state.sarvamVoice,
+        elevenLabsVoiceId: settings.elevenLabsVoiceId,
+        elevenLabsSpeed: settings.elevenLabsSpeed,
+        elevenLabsStability: settings.elevenLabsStability,
+        elevenLabsSimilarityBoost: settings.elevenLabsSimilarityBoost,
+        pace: 1.15
+      }
+    );
+  }
+
+  return;
+}
+
+// ============================================================================
+// 📅 MEETING — STEP 4: Collect date & time
+// ============================================================================
+
+if (state.awaitingMeetingDateTime && !state.awaitingMeetingDateTimeConfirmation) {
+
+  let parsedDateTime = null;
+
+  try {
+    const dtRes = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0,
+      max_tokens: 30,
+      messages: [
+        {
+          role: "system",
+          content: `Extract the date and time from the user's spoken input.
+Current date/time (IST): ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
+
+Rules:
+- "tomorrow at 3 PM" → next day at 15:00
+- "Monday at 10 AM" → next Monday at 10:00
+- "next week Tuesday 2 PM" → next Tuesday at 14:00
+- Return ONLY in format: YYYY-MM-DD HH:mm (24hr IST)
+- If unclear, return: NONE
+
+Examples:
+"tomorrow at 3 PM" → 2026-05-15 15:00
+"Monday 10 in the morning" → 2026-05-18 10:00
+"next Friday at 2:30 PM" → 2026-05-22 14:30
+"I want to meet" → NONE`
+        },
+        { role: "user", content: cleaned }
+      ]
+    });
+
+    const raw = dtRes.choices[0].message.content.trim();
+    console.log(`📅 DateTime parsed: "${cleaned}" → "${raw}"`);
+
+    if (raw !== "NONE" && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(raw)) {
+      parsedDateTime = raw;
+    }
+
+  } catch (err) {
+    console.error("DateTime parse error:", err.message);
+  }
+
+  if (parsedDateTime) {
+
+    state.pendingMeetingDateTime = parsedDateTime;
+    state.awaitingMeetingDateTime = false;
+    state.awaitingMeetingDateTimeConfirmation = true;
+
+    const spoken = new Date(`${parsedDateTime.replace(" ", "T")}:00`).toLocaleString("en-IN", {
+      timeZone: "Asia/Kolkata",
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true
+    });
+
+    await speakText(
+      `Just to confirm — you want to schedule the meeting on ${spoken}. Is that correct?`,
+      state,
+      twilioWs,
+      {
+        transcriberLanguage: state.transcriberLanguage,
+        languageCode: state.transcriberLanguage,
+        sarvamVoice: settings.sarvamVoice,
+        voice: settings.sarvamVoice,
+        elevenLabsVoiceId: settings.elevenLabsVoiceId,
+        elevenLabsSpeed: settings.elevenLabsSpeed,
+        elevenLabsStability: settings.elevenLabsStability,
+        elevenLabsSimilarityBoost: settings.elevenLabsSimilarityBoost,
+        pace: 1.15
+      }
+    );
+
+  } else {
+
+    await speakText(
+      "I didn't catch that. Could you say the date and time again? For example, tomorrow at 3 PM or Monday at 10 AM.",
+      state,
+      twilioWs,
+      {
+        transcriberLanguage: state.transcriberLanguage,
+        languageCode: state.transcriberLanguage,
+        sarvamVoice: settings.sarvamVoice,
+        voice: settings.sarvamVoice,
+        elevenLabsVoiceId: settings.elevenLabsVoiceId,
+        elevenLabsSpeed: settings.elevenLabsSpeed,
+        elevenLabsStability: settings.elevenLabsStability,
+        elevenLabsSimilarityBoost: settings.elevenLabsSimilarityBoost,
+        pace: 1.15
+      }
+    );
+  }
+
+  return;
+}
+
+// ============================================================================
+// 📅 MEETING — STEP 5: Confirm datetime then save ALL to DB
+// ============================================================================
+
+if (state.awaitingMeetingDateTimeConfirmation) {
+ console.log("🔍 STEP 5 calendarConfig:", JSON.stringify(settings.calendarConfig, null, 2));
+  let confirmText = cleaned.toLowerCase();
+
+  try {
+    const confirmRes = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0,
+      max_tokens: 10,
+      messages: [
+        {
+          role: "system",
+          content: `Translate to English. Return ONLY one word: yes, no, or unclear.`
+        },
+        { role: "user", content: cleaned }
+      ]
+    });
+    confirmText = confirmRes.choices[0].message.content.trim().toLowerCase();
+    console.log(`🌍 DateTime confirmation: "${cleaned}" → "${confirmText}"`);
+  } catch (err) {
+    console.error("DateTime confirm error:", err.message);
+  }
+
+  if (confirmText.includes("yes") || confirmText.includes("correct")) {
+
+    state.meetingDateTime = state.pendingMeetingDateTime;
+    state.awaitingMeetingDateTimeConfirmation = false;
+
+    const callSid = streamToCallMap.get(state.streamSid);
+
+    // ✅ NOW save everything to DB — email + phone + datetime together
+    try {
+      const agentRow = await db.query(
+        `SELECT user_id FROM agents WHERE id = $1`,
+        [settings.agentId]
+      );
+      const agentUserId = agentRow.rows[0]?.user_id || null;
+
+      await db.query(
+        `INSERT INTO meeting_requests
+         (call_sid, email, phone, agent_id, agent_name, user_id, scheduled_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          callSid,
+          state.meetingEmail,
+          state.meetingPhone,
+          settings.agentId,
+          settings.agentName,
+          agentUserId,
+          state.meetingDateTime
+        ]
+      );
+
+      console.log("💾 Meeting saved:", {
+        email: state.meetingEmail,
+        phone: state.meetingPhone,
+        datetime: state.meetingDateTime,
+        agentId: settings.agentId,
+        userId: agentUserId 
+      });
+
+       console.log("🔍 calendarConfig check:", {
+        exists: !!settings.calendarConfig,
+        hasToken: !!settings.calendarConfig?.calendar_access_token,
+        tokenLength: settings.calendarConfig?.calendar_access_token?.length || 0,
+        provider: settings.calendarConfig?.calendar_provider || "none"
+      });
+
+      // ✅ CREATE GOOGLE CALENDAR EVENT
+      if (settings.calendarConfig?.calendar_access_token) {
+        try {
+          const eventStart = new Date(`${state.meetingDateTime.replace(" ", "T")}:00+05:30`).toISOString();
+          const eventEnd = new Date(new Date(eventStart).getTime() + 30 * 60 * 1000).toISOString();
+
+          const calendarPayload = {
+            summary: `Scheduled Meeting`,
+            description: `Booked via voice call\nEmail: ${state.meetingEmail}\nPhone: ${state.meetingPhone}`,
+            start: {
+              dateTime: eventStart,
+              timeZone: "Asia/Kolkata"
+            },
+            end: {
+              dateTime: eventEnd,
+              timeZone: "Asia/Kolkata"
+            },
+            attendees: [
+              { email: state.meetingEmail }
+            ],
+            reminders: {
+              useDefault: true
+            }
+          };
+
+          const calResponse = await fetch(
+            "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+            {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${settings.calendarConfig.calendar_access_token}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify(calendarPayload)
+            }
+          );
+
+          if (calResponse.ok) {
+            const calEvent = await calResponse.json();
+            console.log("📅 Google Calendar event created:", calEvent.id);
+
+            // ✅ Save event ID back to meeting_requests for reference
+            db.query(
+              `UPDATE meeting_requests SET calendar_event_id = $1 WHERE call_sid = $2`,
+              [calEvent.id, callSid]
+            ).catch(err => console.error("❌ calendar_event_id update failed:", err.message));
+
+          } else {
+            const errText = await calResponse.text();
+            console.error("❌ Google Calendar API error:", errText);
+          }
+
+        } catch (calErr) {
+          console.error("❌ Calendar event creation failed:", calErr.message);
+        }
+      }
+
+    } catch (err) {
+      console.error("❌ DB insert error:", err.message);
+    }
+
+    await speakText(
+      `Perfect! Your meeting has been scheduled. We will contact you at ${state.meetingEmail}. Is there anything else I can help you with?`,
+      state,
+      twilioWs,
+      {
+        transcriberLanguage: state.transcriberLanguage,
+        languageCode: state.transcriberLanguage,
+        sarvamVoice: settings.sarvamVoice,
+        voice: settings.sarvamVoice,
+        elevenLabsVoiceId: settings.elevenLabsVoiceId,
+        elevenLabsSpeed: settings.elevenLabsSpeed,
+        elevenLabsStability: settings.elevenLabsStability,
+        elevenLabsSimilarityBoost: settings.elevenLabsSimilarityBoost,
+        pace: 1.15
+      }
+    );
+
+    // ✅ Reset ALL meeting state
+    state.meetingEmail = null;
+    state.meetingPhone = null;
+    state.meetingDateTime = null;
+    state.pendingMeetingDateTime = null;
+
+  } else if (confirmText.includes("no") || confirmText.includes("wrong")) {
+
+    state.pendingMeetingDateTime = null;
+    state.awaitingMeetingDateTimeConfirmation = false;
+    state.awaitingMeetingDateTime = true;
+
+    await speakText(
+      "Sorry about that. Could you tell me the date and time again?",
+      state,
+      twilioWs,
+      {
+        transcriberLanguage: state.transcriberLanguage,
+        languageCode: state.transcriberLanguage,
+        sarvamVoice: settings.sarvamVoice,
+        voice: settings.sarvamVoice,
         elevenLabsVoiceId: settings.elevenLabsVoiceId,
         elevenLabsSpeed: settings.elevenLabsSpeed,
         elevenLabsStability: settings.elevenLabsStability,
@@ -2898,9 +3214,9 @@ console.log("===================================");
   transcriberModel: agent.conversation_config?.asr?.model || "nova-3",
       // ElevenLabs settings (if configured)
       elevenLabsVoiceId: agent.conversation_config?.tts?.voice_id || "FGY2WhTYpPnrIDTdsKH5",
-  elevenLabsSpeed: parseFloat(agent.conversation_config?.tts?.speed) || 1.2,
-  elevenLabsStability: agent.conversation_config?.tts?.stability || 1.0,
-  elevenLabsSimilarityBoost: agent.conversation_config?.tts?.similarity_boost || 1.0,
+  elevenLabsSpeed: parseFloat(agent.conversation_config?.tts?.speed) || 1.0,
+  elevenLabsStability: agent.conversation_config?.tts?.stability || 0.4,
+  elevenLabsSimilarityBoost: agent.conversation_config?.tts?.similarity_boost || 0.75,
       isInbound: true,
       agentPrompt: systemPrompt,
        twilioAccountSid: process.env.TWILIO_ACCOUNT_SID,
@@ -3298,6 +3614,11 @@ export async function registerTwilio(fastify, deps) {
         phoneAttempts: 0,
          fillerPlaying: false,
          fillerCancelled: false,
+         // ADD these after phoneAttempts: 0,
+         awaitingMeetingDateTime: false,
+         meetingDateTime: null,
+         pendingMeetingDateTime: null,
+         awaitingMeetingDateTimeConfirmation: false,
       };
 
       const connectDeepgram = async () => {
@@ -3833,4 +4154,6 @@ export {
   preFetchAgentKnowledge,
   aiResponse,
   loadWorkflowByAgent,
+   createGoogleCalendarEvent,   // ← ADD
+  getAgentCalendarConfig,  
 };

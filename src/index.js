@@ -6,8 +6,8 @@ import { registerExotel,preloadInboundSettings } from "./exotel.server.js";
 import { registerTwilio } from "./twilio.server.js";
 import workflowRoutes from "../routes/workflowRoutes.js";
 import multipart from '@fastify/multipart'
-import { preFetchAgentKnowledge, aiResponse, loadWorkflowByAgent } from "./twilio.server.js";
-
+import { preFetchAgentKnowledge, aiResponse, loadWorkflowByAgent, createGoogleCalendarEvent, getAgentCalendarConfig } from "./twilio.server.js";
+import { DateTime } from "luxon";
 export const sessions = new Map();
 export const callSettings = new Map();
 export const streamToCallMap = new Map();
@@ -246,6 +246,8 @@ fastify.post("/call", async (req, reply) => {
 //   });
 // });
 
+
+
 fastify.register(async function (fastify) {
   fastify.get("/preview-agent-ws", { websocket: true }, (ws, req) => {
     const sessionId = req.query.sessionId || `preview-${Date.now()}`;
@@ -370,21 +372,16 @@ fastify.register(async function (fastify) {
             }
 
             /* ✅ duplicate prompt block */
-            const now = Date.now();
-            const cleanInput = (userInput || "")
-              .trim()
-              .toLowerCase();
+           const now = Date.now();
+const cleanInput = (userInput || "").trim();
 
-            if (
-              settings.lastPrompt === cleanInput &&
-              now - settings.lastPromptTime < 2500
-            ) {
-              console.log(
-                "⚠️ Duplicate prompt ignored:",
-                userInput
-              );
-              return;
-            }
+if (
+  settings.lastPrompt === cleanInput &&  // exact match only
+  now - settings.lastPromptTime < 1000   // only within 1 second
+) {
+  console.log("⚠️ Exact duplicate prompt ignored:", userInput);
+  return;
+}
 
             settings.lastPrompt = cleanInput;
             settings.lastPromptTime = now;
@@ -449,7 +446,19 @@ Conversation Rules:
 - Natural human phone tone
 - Ask one question at a time
 - No repetition
+
+Meeting Scheduling Rules (MANDATORY):
+- If user asks to schedule/book/arrange a meeting or demo, you MUST:
+  1. First ask for their email address
+  2. Then ask for preferred date and time
+  3. Then confirm: "I'll schedule a meeting for [datetime] and send confirmation to [email]. Shall I confirm?"
+  4. Only after user says yes, say "Perfect! Meeting confirmed. You'll receive an invite at [email]."
+- Do NOT skip any of these steps
+- Do NOT assume email or datetime — always ask explicitly
+- Collect ONE piece of info at a time
 `;
+
+
 
             if (currentNode) {
               const nodeConfig =
@@ -520,6 +529,103 @@ Conversation Rules:
               "🤖 AI response:",
               response
             );
+
+
+// ✅ ADD THIS BLOCK HERE ↓
+const allUserText = conversation
+  .filter(m => m.role === "user")
+  .map(m => m.content)
+  .join(" ");
+
+const emailMatch = allUserText.match(/[\w.-]+@[\w.-]+\.[a-z]{2,}/i);
+const detectedEmail = emailMatch?.[0]?.toLowerCase();
+
+const aiConfirmedBooking =
+  response.toLowerCase().includes("schedule") ||
+  response.toLowerCase().includes("confirm") ||
+  response.toLowerCase().includes("booked") ||
+  response.toLowerCase().includes("invite") ||
+  response.toLowerCase().includes("send");
+
+console.log("📧 Detected email:", detectedEmail);
+console.log("🤖 AI confirmed booking:", aiConfirmedBooking);
+console.log("📅 Already booked:", settings.meetingBooked);
+
+if (detectedEmail && aiConfirmedBooking && !settings.meetingBooked) {
+  try {
+    // Get calendar config for this agent
+  const agentCalendar = await getAgentCalendarConfig(settings.agentId);
+
+    console.log("📅 Calendar config found:", !!agentCalendar);
+
+    if (agentCalendar?.calendar_access_token) {
+      // Extract datetime from conversation
+    let meetingDT;
+
+// Extract time (handles "4 pm", "4:30 pm", "16:00")
+// Search in AI response first (most accurate — AI echoes confirmed details)
+// then fall back to all user text
+const searchText = response + " " + allUserText;
+
+// Extract time (handles "4 pm", "4:30 pm", "16:00")
+const timeOnlyMatch = searchText.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
+
+// Extract day (handles "today", "tomorrow" anywhere in text)
+const dayMatch = searchText.match(/\b(today|tomorrow)\b/i);
+
+if (timeOnlyMatch) {
+  let hour = parseInt(timeOnlyMatch[1]);
+  const minute = parseInt(timeOnlyMatch[2] || "0");
+  const meridiem = timeOnlyMatch[3].toLowerCase();
+  
+  if (meridiem === "pm" && hour !== 12) hour += 12;
+  if (meridiem === "am" && hour === 12) hour = 0;
+
+  const dayPart = dayMatch?.[1]?.toLowerCase() || "today";
+  
+  const base = DateTime.now().setZone("Asia/Kolkata");
+  
+  if (dayPart === "tomorrow") {
+    meetingDT = base.plus({ days: 1 }).set({ hour, minute, second: 0, millisecond: 0 });
+  } else {
+    // today — if time already passed, default to tomorrow
+    meetingDT = base.set({ hour, minute, second: 0, millisecond: 0 });
+    if (meetingDT < base) {
+      meetingDT = meetingDT.plus({ days: 1 });
+      console.log("⚠️ Today's time already passed, moved to tomorrow");
+    }
+  }
+  
+  console.log(`✅ Parsed: day="${dayPart}", hour=${hour}, minute=${minute} → ${meetingDT.toISO()}`);
+}
+
+// Fallback: tomorrow 3pm if nothing parsed
+if (!meetingDT || !meetingDT.isValid) {
+  meetingDT = DateTime.now().setZone("Asia/Kolkata").plus({ days: 1 }).set({ hour: 15, minute: 0, second: 0 });
+  console.log("⚠️ No datetime parsed, using fallback:", meetingDT.toISO());
+}
+
+      const formattedDatetime = meetingDT.toUTC().toFormat("yyyy-MM-dd HH:mm:ss");
+      console.log("📅 Booking meeting at:", formattedDatetime, "for:", detectedEmail);
+
+      await createGoogleCalendarEvent({
+        accessToken: agentCalendar.calendar_access_token,
+        email: detectedEmail,
+        datetime: formattedDatetime,
+        purpose: "Meeting",
+        timezone: "Asia/Kolkata"
+      });
+
+      settings.meetingBooked = true;
+      console.log("✅ Preview meeting booked successfully!");
+    } else {
+      console.log("⚠️ No calendar access token found for agent:", settings.agentId);
+    }
+  } catch (bookErr) {
+    console.error("❌ Preview meeting booking failed:", bookErr.message);
+  }
+}
+// ✅ END BLOCK ↑
 
             /* ✅ duplicate response block */
             if (
